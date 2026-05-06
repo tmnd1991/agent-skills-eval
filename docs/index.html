@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>agent-skills-eval</title>
+    <meta name="description" content="SDK and CLI for evaluating agentskills.io-style skills." />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="./">agent-skills-eval</a>
+        <div class="links">
+          <a href="#quickstart">Quickstart</a>
+          <a href="#config">Config</a>
+          <a href="#sdk">SDK</a>
+          <a href="#artifacts">Artifacts</a>
+          <a href="https://github.com/darkrishabh/agent-skills-eval">GitHub</a>
+        </div>
+      </nav>
+      <div class="hero-inner">
+        <p class="eyebrow">Open source evaluator for Agent Skills</p>
+        <h1>Evaluate agentskills.io-style skills from a CLI, SDK, or CI workflow.</h1>
+        <p class="lead">
+          Run skill-aware and baseline model calls, grade outputs with a judge model, write portable artifacts,
+          and publish static reports without depending on a larger benchmark app.
+        </p>
+        <div class="commands">
+          <code>npm install agent-skills-eval</code>
+          <code>npx agent-skills-eval --config agent-skills-eval.yaml</code>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section id="quickstart">
+        <h2>Quickstart</h2>
+        <div class="grid two">
+          <article>
+            <h3>Install</h3>
+            <pre><code>npm install agent-skills-eval</code></pre>
+          </article>
+          <article>
+            <h3>Run</h3>
+            <pre><code>OPENAI_BASE_URL=https://api.openai.com/v1 \
+OPENAI_API_KEY=... \
+npx agent-skills-eval ./skills \
+  --target gpt-4o-mini \
+  --judge gpt-4o-mini \
+  --baseline \
+  --strict</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="config">
+        <h2>YAML Config</h2>
+        <p>Use config files for repeatable local and CI runs. CLI flags override config values.</p>
+        <pre><code>root: ./skills
+workspace: ./agent-skills-workspace
+baseline: true
+target: gpt-4o-mini
+judge: gpt-4o-mini
+baseUrl: https://api.openai.com/v1
+apiKeyEnv: OPENAI_API_KEY
+concurrency: 4
+layout: iteration
+strict: true
+report:
+  enabled: true
+  title: Agent Skills Report
+logging:
+  format: pretty
+  verbose: false
+targetParams:
+  temperature: 0
+judgeParams:
+  temperature: 0</code></pre>
+      </section>
+
+      <section id="sdk">
+        <h2>SDK Usage</h2>
+        <pre><code>import {
+  OpenAICompatibleProvider,
+  consoleReporter,
+  evaluateSkills,
+} from "agent-skills-eval";
+
+const provider = new OpenAICompatibleProvider({
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: "gpt-4o-mini",
+  providerName: "openai",
+});
+
+const result = await evaluateSkills({
+  root: "./skills",
+  workspace: "./agent-skills-workspace",
+  baseline: true,
+  workspaceLayout: "iteration",
+  strict: true,
+  target: { model: provider.model, provider },
+  judge: { model: provider.model, provider },
+  onEvent: consoleReporter(),
+});</code></pre>
+      </section>
+
+      <section id="skill-format">
+        <h2>Skill Format</h2>
+        <div class="grid two">
+          <article>
+            <h3>SKILL.md</h3>
+            <pre><code>---
+name: csv-analyzer
+description: Analyze CSV files.
+license: MIT
+---
+
+Identify trends and cite the relevant rows.</code></pre>
+          </article>
+          <article>
+            <h3>evals/evals.json</h3>
+            <pre><code>{
+  "evals": [
+    {
+      "id": "basic",
+      "prompt": "Find the highest revenue month.",
+      "files": ["evals/files/revenue.csv"],
+      "assertions": [
+        "The answer names February."
+      ]
+    }
+  ]
+}</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="artifacts">
+        <h2>Artifacts And Reports</h2>
+        <p>
+          Runs produce the official <code>iteration-N</code> workspace layout with prompts, outputs, timings,
+          grading, optional tool calls, benchmarks, and a static HTML report.
+        </p>
+        <pre><code>agent-skills-workspace/
+  iteration-1/
+    meta.json
+    benchmark.json
+    eval-basic/
+      with_skill/
+        prompts.json
+        timing.json
+        grading.json
+        outputs/response.txt
+      without_skill/
+        ...</code></pre>
+      </section>
+    </main>
+
+    <footer>
+      <p>MIT licensed. Built for portable agent skill evaluation.</p>
+    </footer>
+  </body>
+</html>

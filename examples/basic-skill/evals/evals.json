@@ -1,0 +1,16 @@
+{
+  "skill_name": "basic-skill",
+  "evals": [
+    {
+      "id": "top-revenue-month",
+      "name": "top revenue month",
+      "prompt": "Use the attached CSV to identify the month with the highest revenue.",
+      "files": ["evals/files/revenue.csv"],
+      "expected_output": "The response identifies February as the highest revenue month with revenue of 18.",
+      "assertions": [
+        "The output names February as the highest revenue month.",
+        "The output includes the value 18."
+      ]
+    }
+  ]
+}

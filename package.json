@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "SDK and CLI for evaluating agentskills.io-style skills.",
   "type": "module",
+  "author": "Rishabh Mehan",
+  "sideEffects": false,
   "bin": {
     "agent-skills-eval": "dist/cli.js"
   },
@@ -20,17 +22,33 @@
     "./openai-compatible": {
       "import": "./dist/openai-compatible-provider.js",
       "types": "./dist/openai-compatible-provider.d.ts"
+    },
+    "./config": {
+      "import": "./dist/config.js",
+      "types": "./dist/config.d.ts"
+    },
+    "./reporters": {
+      "import": "./dist/jsonl-reporter.js",
+      "types": "./dist/jsonl-reporter.d.ts"
     }
   },
   "files": [
     "dist",
+    "examples",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"test/**/*.test.mjs\"",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "agentskills",
@@ -40,6 +58,17 @@
     "benchmark"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darkrishabh/agent-skills-eval.git"
+  },
+  "bugs": {
+    "url": "https://github.com/darkrishabh/agent-skills-eval/issues"
+  },
+  "homepage": "https://darkrishabh.github.io/agent-skills-eval/",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "commander": "^12.1.0",
     "js-yaml": "^4.1.1"

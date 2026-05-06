@@ -1,0 +1,29 @@
+name: Bug report
+description: Report something broken in the SDK, CLI, or reports.
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal commands, skill files, or config needed to reproduce.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: agent-skills-eval 0.1.0, Node 22
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or artifacts
+      description: Paste relevant output, JSONL events, or artifact paths.
