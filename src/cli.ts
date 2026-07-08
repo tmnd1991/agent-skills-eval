@@ -22,6 +22,7 @@ interface CliOptions {
   opencodeAuto?: boolean;
   opencodeDir?: string;
   opencodeTimeout?: string;
+  opencodeJudgeTimeout?: string;
   include?: string[];
   exclude?: string[];
   concurrency?: string;
@@ -84,6 +85,10 @@ async function main(): Promise<void> {
     .option("--no-opencode-auto", "Disable opencode auto-approve, overriding config file")
     .option("--opencode-dir <path>", "Working directory for opencode runs")
     .option("--opencode-timeout <ms>", "opencode subprocess timeout in milliseconds")
+    .option(
+      "--opencode-judge-timeout <ms>",
+      "opencode judge/grader subprocess timeout in milliseconds; defaults to --opencode-timeout"
+    )
     .option("--include <glob>", "Include skill relPath glob", list, [])
     .option("--exclude <glob>", "Exclude skill relPath glob", list, [])
     .option("--concurrency <number>", "Eval cases to run in parallel")
@@ -131,6 +136,10 @@ async function main(): Promise<void> {
     opts.opencodeTimeout !== undefined
       ? Number.parseInt(opts.opencodeTimeout, 10)
       : config.opencode?.timeoutMs ?? 5 * 60 * 1000;
+  const opencodeJudgeTimeoutMs =
+    opts.opencodeJudgeTimeout !== undefined
+      ? Number.parseInt(opts.opencodeJudgeTimeout, 10)
+      : config.opencode?.judgeTimeoutMs ?? opencodeTimeoutMs;
 
   if (runMode !== "api" && runMode !== "opencode") {
     throw new Error('--run-mode must be "api" or "opencode"');
@@ -160,6 +169,9 @@ async function main(): Promise<void> {
   if (runMode === "opencode" && (!Number.isInteger(opencodeTimeoutMs) || opencodeTimeoutMs < 1)) {
     throw new Error("--opencode-timeout must be a positive integer (milliseconds)");
   }
+  if (runMode === "opencode" && (!Number.isInteger(opencodeJudgeTimeoutMs) || opencodeJudgeTimeoutMs < 1)) {
+    throw new Error("--opencode-judge-timeout must be a positive integer (milliseconds)");
+  }
 
   let target: Provider;
   let judge: Provider;
@@ -180,7 +192,7 @@ async function main(): Promise<void> {
       agent: opencodeAgent,
       dir: opencodeDir,
       auto: opencodeAuto,
-      timeoutMs: opencodeTimeoutMs,
+      timeoutMs: opencodeJudgeTimeoutMs,
     });
   } else {
     const creds = requireApiCredentials(baseUrl, apiKey, apiKeyEnv);

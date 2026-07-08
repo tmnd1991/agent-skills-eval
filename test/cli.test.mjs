@@ -159,6 +159,8 @@ test("CLI --run-mode opencode skips API credential requirements and runs via the
     "runMode: opencode",
     "opencode:",
     `  command: ${JSON.stringify(fakeOpencodePath)}`,
+    "  timeoutMs: 60000",
+    "  judgeTimeoutMs: 120000",
     "layout: iteration",
     "strict: true",
     "report:",
@@ -194,6 +196,34 @@ test("CLI --run-mode bogus fails validation with a clear error", async () => {
     ),
     (err) => {
       assert.match(err.stderr, /--run-mode must be "api" or "opencode"/);
+      return true;
+    },
+  );
+});
+
+test("CLI --opencode-judge-timeout rejects non-positive values", async () => {
+  const root = tempRoot();
+  writeSkill(root);
+
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        "dist/cli.js",
+        root,
+        "--run-mode",
+        "opencode",
+        "--target",
+        "fake/model",
+        "--opencode-command",
+        fakeOpencodePath,
+        "--opencode-judge-timeout",
+        "0",
+      ],
+      { cwd: path.resolve(".") },
+    ),
+    (err) => {
+      assert.match(err.stderr, /--opencode-judge-timeout must be a positive integer/);
       return true;
     },
   );

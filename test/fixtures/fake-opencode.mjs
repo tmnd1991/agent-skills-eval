@@ -14,7 +14,7 @@ function emitStepFinishPair() {
   });
   emit({
     type: "step_finish",
-    part: { type: "step-finish", tokens: { input: 50, output: 7, reasoning: 3 }, cost: 0.0005 },
+    part: { type: "step-finish", reason: "stop", tokens: { input: 50, output: 7, reasoning: 3 }, cost: 0.0005 },
   });
 }
 
@@ -32,6 +32,15 @@ process.stdin.on("end", () => {
   if (stdin.includes("__FAKE_OPENCODE_HANG__")) {
     // Never write output, never exit — keeps the event loop alive so the
     // caller's timeout/kill path can be exercised.
+    setInterval(() => {}, 1000);
+    return;
+  }
+
+  if (stdin.includes("__FAKE_OPENCODE_HANG_AFTER_STOP__")) {
+    // Emit a normal completion (including the reason: "stop" signal) but
+    // never exit — exercises the provider's early-kill-on-completion path.
+    emit({ type: "text", part: { id: "p1", text: "FAKE_OPENCODE_OK" } });
+    emitStepFinishPair();
     setInterval(() => {}, 1000);
     return;
   }

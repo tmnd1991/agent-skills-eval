@@ -258,6 +258,7 @@ npx agent-skills-eval ./skills \
 | `--opencode-dir <path>` | Working directory opencode runs in (also the subprocess `cwd`). Default: current directory. |
 | `--opencode-auto` / `--no-opencode-auto` | Passed through as opencode's `--auto` (auto-approve permissions). **Dangerous, off by default** — see caveat below. `--no-opencode-auto` always overrides `opencode.auto: true` set in a config file. |
 | `--opencode-timeout <ms>` | Hard kill timeout per call. Default `300000` (5 minutes). Always enforced, regardless of `--opencode-auto`. |
+| `--opencode-judge-timeout <ms>` | Hard kill timeout for judge/grader calls specifically. Defaults to `--opencode-timeout`. A judge that reads a full transcript plus output files is often slower than the run it grades — set this higher if judge calls are timing out. |
 
 Equivalent YAML:
 
@@ -269,15 +270,19 @@ opencode:
   auto: false
   dir: ./workspace-scratch
   timeoutMs: 300000
+  judgeTimeoutMs: 600000
 ```
+
+**Skills are loaded natively, not injected into the prompt.** In every other run mode, `with_skill` works by wrapping the skill in an XML block and prepending it to the prompt. In opencode mode, that would never happen in real-world use — opencode discovers skills on disk and loads them itself via its own `skill` tool (see [opencode's Agent Skills docs](https://opencode.ai/docs/skills/)). So instead, before each call this provider symlinks every entry of the skill's directory into `<opencode.dir>/.opencode/skills/<name>/` for `with_skill` runs, and removes that symlink tree for `without_skill` runs — the agent decides for itself whether to call `skill({ name })`. The skill's `evals/` folder (which holds the answer key) is never linked. No `system` message is sent in this mode; the model gets the bare eval prompt either way.
 
 **Caveats:**
 
 - **Token/cost numbers aren't comparable to API mode.** opencode's own system prompt and tool schemas add fixed overhead to every call (observed ~8,400 input tokens for a trivial one-word prompt), so `inputTokens`/`outputTokens`/`costUsd` from opencode-mode runs are not apples-to-apples with the same model called via `OpenAICompatibleProvider`.
 - **`--opencode-auto` is dangerous.** It lets the target/judge model run opencode's own bash/file-edit tools completely unattended for the duration of the call. It's off by default. Even without it, a stuck interactive permission prompt has no TTY to answer in a non-interactive eval run — that's what `--opencode-timeout` guards against; it always applies, whether or not `--opencode-auto` is set.
+- **Exits early once the answer is in.** `opencode run` sometimes finishes its final answer but stalls instead of exiting; as soon as the subprocess emits its `step_finish`/`reason: "stop"` event, this provider gives it a few seconds to exit on its own and then kills it, rather than always waiting out the full `--opencode-timeout`.
 - **No `tool_assertions` support.** opencode's own internal tool use (bash, file edit, task delegation) is unrelated to this SDK's `tools`/`tool_assertions` feature — there's no schema mapping between the two. `tool_assertions` in an eval will always grade against an empty tool-call list under `--run-mode opencode`.
 - **No session reuse.** Every target/judge call is an independent, fresh `opencode run` (no `-c`/`-s` continuation) — matches how every other `Provider` call in this SDK is stateless.
-- **Shared working directory.** All calls from one CLI invocation share a single `--opencode-dir`. If a skill has the model write files, use `--concurrency 1` to avoid cross-eval races.
+- **Shared working directory.** All calls from one CLI invocation share a single `--opencode-dir`. If a skill has the model write files, or you run `with_skill`/`without_skill` for the same skill concurrently, use `--concurrency 1` — otherwise the on-disk skill symlink one call installs/removes can race another call's `.opencode/skills/<name>/` lookup.
 
 ## Skill layout
 

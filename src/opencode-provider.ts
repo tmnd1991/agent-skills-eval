@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import type { Provider, ProviderResult } from "./provider.js";
+import { mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import path from "node:path";
+import type { Provider, ProviderResult, SkillSource } from "./provider.js";
 
 export interface OpencodeOptions {
   /** Shown as `provider` in ProviderResult. Default "opencode". */
@@ -28,13 +30,30 @@ interface ParsedRun {
   errorMessage?: string;
 }
 
-/** Grace period between SIGTERM and SIGKILL when the timeout fires. */
+/** Grace period between SIGTERM and SIGKILL when a timeout/kill fires. */
 const KILL_GRACE_MS = 5000;
+
+/**
+ * `opencode run` sometimes finishes its final answer but stalls instead of
+ * exiting. Once we see the completion signal (a `step_finish` event whose
+ * `part.reason` is `"stop"`) in the stdout stream, we no longer need the
+ * process alive — give it this long to exit on its own, then kill it
+ * ourselves instead of waiting out the full `timeoutMs`.
+ */
+const COMPLETION_GRACE_MS = 3000;
 
 /**
  * Wraps `opencode run --format json` as a `Provider`. Spawns one fresh,
  * session-less `opencode run` subprocess per `complete()` call (no `-c`/`-s`
  * reuse — every call is independent).
+ *
+ * Implements `prepareSkill`/`cleanupSkill`: rather than injecting the skill
+ * into the prompt, it symlinks every entry of the skill's directory (except
+ * `evals/`, which holds the answer key) into `<dir>/.opencode/skills/<name>/`
+ * so opencode's own skill tool discovers and loads it exactly as it would in
+ * real-world use (see https://opencode.ai/docs/skills/). `runEval` calls
+ * this instead of building a system message whenever the provider exposes
+ * these hooks.
  *
  * Caveats (see README "opencode run mode" for detail): token/cost numbers
  * include opencode's own system-prompt/tool-schema overhead and are not
@@ -42,7 +61,9 @@ const KILL_GRACE_MS = 5000;
  * the same model; `auto: true` auto-approves opencode's own permission
  * prompts (bash/file-edit tools) unattended and is off by default;
  * capabilities are all false, so callers always merge system+user into one
- * string before calling `complete()`.
+ * string before calling `complete()`. The installed skill directory is
+ * shared across every call using the same `dir` — use `--concurrency 1` if
+ * concurrent evals of the same skill would otherwise race on install/remove.
  */
 export class OpencodeProvider implements Provider {
   readonly capabilities = { systemRole: false, attachments: false, toolCalls: false };
@@ -69,10 +90,41 @@ export class OpencodeProvider implements Provider {
     this.extraArgs = options.extraArgs ?? [];
   }
 
+  /**
+   * Removes any previously installed copy of `skill`, then — only when
+   * `mode` is `"with_skill"` — symlinks it into place so opencode's skill
+   * tool finds it under `<dir>/.opencode/skills/<name>/`. Every entry in
+   * `skill.dir` is linked except `evals/`, which holds the answer key.
+   */
+  async prepareSkill(skill: SkillSource, mode: "with_skill" | "without_skill"): Promise<void> {
+    const installDir = this.skillInstallDir(skill.name);
+    rmSync(installDir, { recursive: true, force: true });
+    if (mode !== "with_skill") return;
+
+    mkdirSync(installDir, { recursive: true });
+    for (const entry of readdirSync(skill.dir, { withFileTypes: true })) {
+      if (entry.name === "evals") continue;
+      symlinkSync(
+        path.join(skill.dir, entry.name),
+        path.join(installDir, entry.name),
+        entry.isDirectory() ? "dir" : "file"
+      );
+    }
+  }
+
+  /** Removes whatever `prepareSkill` installed for `skill`, regardless of mode. */
+  async cleanupSkill(skill: SkillSource): Promise<void> {
+    rmSync(this.skillInstallDir(skill.name), { recursive: true, force: true });
+  }
+
+  private skillInstallDir(name: string): string {
+    return path.join(this.dir, ".opencode", "skills", name);
+  }
+
   async complete(prompt: string): Promise<ProviderResult> {
     const start = Date.now();
     try {
-      const { stdout, stderr, exitCode, timedOut } = await this.runSubprocess(prompt);
+      const { stdout, stderr, exitCode, timedOut, killedAfterCompletion } = await this.runSubprocess(prompt);
       const latencyMs = Date.now() - start;
       const parsed = parseOpencodeNdjson(stdout);
 
@@ -82,7 +134,7 @@ export class OpencodeProvider implements Provider {
       if (parsed.errorMessage) {
         return this.errorResult(parsed.errorMessage, latencyMs, parsed);
       }
-      if (exitCode !== 0) {
+      if (exitCode !== 0 && !killedAfterCompletion) {
         const detail = stderr.trim().slice(-2000) || `exit code ${exitCode}`;
         return this.errorResult(`opencode run failed: ${detail}`, latencyMs, parsed);
       }
@@ -131,9 +183,14 @@ export class OpencodeProvider implements Provider {
     return args;
   }
 
-  private runSubprocess(
-    stdinInput: string
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
+  private runSubprocess(stdinInput: string): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    /** True if we force-killed the process after seeing its completion signal, not because it errored/hung. */
+    killedAfterCompletion: boolean;
+  }> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, this.buildArgs(), {
         cwd: this.dir,
@@ -143,18 +200,39 @@ export class OpencodeProvider implements Provider {
 
       let stdout = "";
       let stderr = "";
+      let pendingLine = "";
       let timedOut = false;
+      let killedAfterCompletion = false;
+      let completionSeen = false;
       let settled = false;
+      let completionGraceTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const forceKill = () => {
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+      };
 
       const killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+        forceKill();
       }, this.timeoutMs);
       killTimer.unref();
 
       child.stdout.on("data", (chunk) => {
-        stdout += chunk;
+        const text = String(chunk);
+        stdout += text;
+        if (completionSeen) return;
+        pendingLine += text;
+        const lines = pendingLine.split("\n");
+        pendingLine = lines.pop() ?? "";
+        if (lines.some(isCompletionSignalLine)) {
+          completionSeen = true;
+          completionGraceTimer = setTimeout(() => {
+            killedAfterCompletion = true;
+            forceKill();
+          }, COMPLETION_GRACE_MS);
+          completionGraceTimer.unref();
+        }
       });
       child.stderr.on("data", (chunk) => {
         stderr += chunk;
@@ -165,6 +243,7 @@ export class OpencodeProvider implements Provider {
 
       child.on("error", (err) => {
         clearTimeout(killTimer);
+        if (completionGraceTimer) clearTimeout(completionGraceTimer);
         if (!settled) {
           settled = true;
           reject(err);
@@ -172,9 +251,10 @@ export class OpencodeProvider implements Provider {
       });
       child.on("close", (code) => {
         clearTimeout(killTimer);
+        if (completionGraceTimer) clearTimeout(completionGraceTimer);
         if (!settled) {
           settled = true;
-          resolve({ stdout, stderr, exitCode: code, timedOut });
+          resolve({ stdout, stderr, exitCode: code, timedOut: timedOut && !completionSeen, killedAfterCompletion });
         }
       });
 
@@ -182,6 +262,19 @@ export class OpencodeProvider implements Provider {
       child.stdin.end();
     });
   }
+}
+
+/** True if `line` is a `step_finish` event whose part signals the final answer (`reason === "stop"`). */
+function isCompletionSignalLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  let event: any;
+  try {
+    event = JSON.parse(trimmed);
+  } catch {
+    return false;
+  }
+  return event?.type === "step_finish" && event?.part?.reason === "stop";
 }
 
 /**

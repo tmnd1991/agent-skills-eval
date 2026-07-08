@@ -12,6 +12,8 @@ export interface OpencodeConfig {
   auto?: boolean;
   dir?: string;
   timeoutMs?: number;
+  /** Timeout for judge/grader calls. Defaults to `timeoutMs`. Judge sessions read a full transcript plus output files and are often slower than the executor run they grade. */
+  judgeTimeoutMs?: number;
 }
 
 export interface AgentSkillsEvalConfig {
@@ -111,6 +113,7 @@ function parseOpencode(value: unknown): OpencodeConfig | undefined {
     auto: asBoolean(record.auto, "opencode.auto"),
     dir: asString(record.dir, "opencode.dir"),
     timeoutMs: asNumber(record.timeoutMs, "opencode.timeoutMs"),
+    judgeTimeoutMs: asNumber(record.judgeTimeoutMs, "opencode.judgeTimeoutMs"),
   };
 }
 
