@@ -5,6 +5,8 @@ import { consoleReporter } from "./console-reporter.js";
 import { evaluateSkills } from "./evaluate-skills.js";
 import { jsonlReporter, type JsonlReporter } from "./jsonl-reporter.js";
 import { OpenAICompatibleProvider } from "./openai-compatible-provider.js";
+import { OpencodeProvider } from "./opencode-provider.js";
+import type { Provider } from "./provider.js";
 
 interface CliOptions {
   config?: string;
@@ -14,6 +16,12 @@ interface CliOptions {
   judge?: string;
   baseUrl?: string;
   apiKeyEnv?: string;
+  runMode?: "api" | "opencode";
+  opencodeCommand?: string;
+  opencodeAgent?: string;
+  opencodeAuto?: boolean;
+  opencodeDir?: string;
+  opencodeTimeout?: string;
   include?: string[];
   exclude?: string[];
   concurrency?: string;
@@ -46,6 +54,16 @@ function reportOutput(report: AgentSkillsEvalConfig["report"]): string | undefin
   return typeof report === "object" && report ? report.output : undefined;
 }
 
+function requireApiCredentials(
+  baseUrl: string | undefined,
+  apiKey: string | undefined,
+  apiKeyEnv: string
+): { baseUrl: string; apiKey: string } {
+  if (!baseUrl) throw new Error("provide --base-url or set OPENAI_BASE_URL");
+  if (!apiKey) throw new Error(`environment variable ${apiKeyEnv} is not set`);
+  return { baseUrl, apiKey };
+}
+
 async function main(): Promise<void> {
   const program = new Command();
   program
@@ -59,6 +77,13 @@ async function main(): Promise<void> {
     .option("--judge <model>", "Judge model name; defaults to --target")
     .option("--base-url <url>", "OpenAI-compatible API base URL")
     .option("--api-key-env <name>", "Environment variable containing the API key")
+    .option("--run-mode <mode>", "Execution mode: api (default) or opencode")
+    .option("--opencode-command <path>", "Path to the opencode binary")
+    .option("--opencode-agent <name>", "opencode --agent to use")
+    .option("--opencode-auto", "Auto-approve opencode permissions (dangerous)")
+    .option("--no-opencode-auto", "Disable opencode auto-approve, overriding config file")
+    .option("--opencode-dir <path>", "Working directory for opencode runs")
+    .option("--opencode-timeout <ms>", "opencode subprocess timeout in milliseconds")
     .option("--include <glob>", "Include skill relPath glob", list, [])
     .option("--exclude <glob>", "Exclude skill relPath glob", list, [])
     .option("--concurrency <number>", "Eval cases to run in parallel")
@@ -83,6 +108,7 @@ async function main(): Promise<void> {
   const apiKeyEnv = opts.apiKeyEnv ?? config.apiKeyEnv ?? "OPENAI_API_KEY";
   const baseUrl = opts.baseUrl ?? config.baseUrl ?? process.env.OPENAI_BASE_URL;
   const apiKey = process.env[apiKeyEnv];
+  const runMode = opts.runMode ?? config.runMode ?? "api";
   const include = opts.include && opts.include.length > 0 ? opts.include : config.include;
   const exclude = opts.exclude && opts.exclude.length > 0 ? opts.exclude : config.exclude;
   const concurrency = opts.concurrency !== undefined
@@ -97,12 +123,30 @@ async function main(): Promise<void> {
   const logFile = opts.logFile ?? config.logging?.file;
   const verbose = opts.verbose ?? config.logging?.verbose ?? false;
   const color = opts.color ?? config.logging?.color ?? "auto";
+  const opencodeCommand = opts.opencodeCommand ?? config.opencode?.command ?? "opencode";
+  const opencodeAgent = opts.opencodeAgent ?? config.opencode?.agent;
+  const opencodeAuto = opts.opencodeAuto ?? config.opencode?.auto ?? false;
+  const opencodeDir = opts.opencodeDir ?? config.opencode?.dir ?? process.cwd();
+  const opencodeTimeoutMs =
+    opts.opencodeTimeout !== undefined
+      ? Number.parseInt(opts.opencodeTimeout, 10)
+      : config.opencode?.timeoutMs ?? 5 * 60 * 1000;
 
-  if (!baseUrl) {
-    throw new Error("provide --base-url or set OPENAI_BASE_URL");
+  if (runMode !== "api" && runMode !== "opencode") {
+    throw new Error('--run-mode must be "api" or "opencode"');
   }
-  if (!apiKey) {
-    throw new Error(`environment variable ${apiKeyEnv} is not set`);
+  if (runMode === "api") {
+    if (!baseUrl) {
+      throw new Error("provide --base-url or set OPENAI_BASE_URL");
+    }
+    if (!apiKey) {
+      throw new Error(`environment variable ${apiKeyEnv} is not set`);
+    }
+  }
+  if (runMode === "opencode" && !opts.target && !config.target) {
+    throw new Error(
+      '--target is required when --run-mode is "opencode" (use "provider/model", e.g. "anthropic/claude-sonnet-5")'
+    );
   }
   if (layout !== "iteration" && layout !== "flat") {
     throw new Error('--layout must be "iteration" or "flat"');
@@ -113,19 +157,46 @@ async function main(): Promise<void> {
   if (logFormat !== "pretty" && logFormat !== "jsonl" && logFormat !== "silent") {
     throw new Error('--log-format must be "pretty", "jsonl", or "silent"');
   }
+  if (runMode === "opencode" && (!Number.isInteger(opencodeTimeoutMs) || opencodeTimeoutMs < 1)) {
+    throw new Error("--opencode-timeout must be a positive integer (milliseconds)");
+  }
 
-  const target = new OpenAICompatibleProvider({
-    providerName: "openai-compatible",
-    baseUrl,
-    apiKey,
-    model: targetModel,
-  });
-  const judge = new OpenAICompatibleProvider({
-    providerName: "openai-compatible",
-    baseUrl,
-    apiKey,
-    model: judgeModel,
-  });
+  let target: Provider;
+  let judge: Provider;
+  if (runMode === "opencode") {
+    target = new OpencodeProvider({
+      providerName: "opencode",
+      model: targetModel,
+      command: opencodeCommand,
+      agent: opencodeAgent,
+      dir: opencodeDir,
+      auto: opencodeAuto,
+      timeoutMs: opencodeTimeoutMs,
+    });
+    judge = new OpencodeProvider({
+      providerName: "opencode",
+      model: judgeModel,
+      command: opencodeCommand,
+      agent: opencodeAgent,
+      dir: opencodeDir,
+      auto: opencodeAuto,
+      timeoutMs: opencodeTimeoutMs,
+    });
+  } else {
+    const creds = requireApiCredentials(baseUrl, apiKey, apiKeyEnv);
+    target = new OpenAICompatibleProvider({
+      providerName: "openai-compatible",
+      baseUrl: creds.baseUrl,
+      apiKey: creds.apiKey,
+      model: targetModel,
+    });
+    judge = new OpenAICompatibleProvider({
+      providerName: "openai-compatible",
+      baseUrl: creds.baseUrl,
+      apiKey: creds.apiKey,
+      model: judgeModel,
+    });
+  }
 
   let closeReporter: (() => Promise<void>) | undefined;
   let onEvent;
