@@ -107,6 +107,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "^1.17.15",
     "commander": "^12.1.0",
     "js-yaml": "^4.1.1"
   },

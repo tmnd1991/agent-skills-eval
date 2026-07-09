@@ -1,28 +1,30 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
+import { createOpencodeClient } from "@opencode-ai/sdk";
+import type { AssistantMessage, Message, Part } from "@opencode-ai/sdk";
 import type { Provider, ProviderResult, SkillSource } from "./provider.js";
 
 export interface OpencodeOptions {
   /** Shown as `provider` in ProviderResult. Default "opencode". */
   providerName?: string;
-  /** Required. "provider/model" form expected by `opencode run -m`, e.g. "anthropic/claude-sonnet-5". */
+  /** Required. "provider/model" form, e.g. "anthropic/claude-sonnet-5". */
   model: string;
-  /** Path/name of the opencode binary to spawn. Default "opencode" (resolved via PATH). */
-  command?: string;
-  /** Forwarded as `--agent <name>`. Omitted from argv when unset. */
+  /** Forwarded as the session's `agent`. Omitted when unset. */
   agent?: string;
-  /** Forwarded as `--dir <path>` and used as the subprocess cwd. Default process.cwd(). */
+  /** Working directory for the opencode server and installed skills. Default process.cwd(). */
   dir?: string;
-  /** Forwarded as `--auto` when true. Dangerous — see class doc comment. Default false. */
+  /** Auto-approve opencode's own permission prompts (bash/file-edit/etc). Dangerous — see class doc comment. Default false. */
   auto?: boolean;
-  /** Hard kill timeout for the subprocess, ms. Default 300_000 (5 minutes). */
+  /** Hard deadline for the whole call (initial prompt + waiting on delegated work + continuations), ms. Default 300_000 (5 minutes). */
   timeoutMs?: number;
-  /** Extra argv entries appended verbatim after the standard flags. */
-  extraArgs?: string[];
+  /** Max follow-up prompts issued to let the model pick up a delegated subagent's result. Default 3. */
+  maxContinuations?: number;
+  /** Test-only: talk to an already-running server instead of spawning one via `createOpencodeServer`. */
+  baseUrl?: string;
 }
 
-interface ParsedRun {
+interface RunOutcome {
   text: string;
   inputTokens: number;
   outputTokens: number;
@@ -30,22 +32,156 @@ interface ParsedRun {
   errorMessage?: string;
 }
 
-/** Grace period between SIGTERM and SIGKILL when a timeout/kill fires. */
-const KILL_GRACE_MS = 5000;
+const POLL_INTERVAL_MS = 250;
+/** Grace period between SIGTERM and SIGKILL when tearing down our private opencode server. */
+const SERVER_KILL_GRACE_MS = 3000;
+/** How long to wait for `opencode serve` to print its listening URL before giving up. */
+const SERVER_START_TIMEOUT_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface SpawnedServer {
+  url: string;
+  close(): void;
+}
 
 /**
- * `opencode run` sometimes finishes its final answer but stalls instead of
- * exiting. Once we see the completion signal (a `step_finish` event whose
- * `part.reason` is `"stop"`) in the stdout stream, we no longer need the
- * process alive — give it this long to exit on its own, then kill it
- * ourselves instead of waiting out the full `timeoutMs`.
+ * Spawns `opencode serve` directly (rather than via `@opencode-ai/sdk`'s
+ * `createOpencodeServer`) so we keep a handle to the raw child process and
+ * can escalate to SIGKILL if it doesn't honor SIGTERM promptly — the SDK
+ * helper's `close()` only ever sends one SIGTERM with no escalation, which
+ * left real orphaned `opencode serve` processes behind in testing.
  */
-const COMPLETION_GRACE_MS = 3000;
+function spawnOpencodeServer(options: {
+  hostname: string;
+  port: number;
+  permission?: Record<string, unknown>;
+}): Promise<SpawnedServer> {
+  return new Promise((resolve, reject) => {
+    const child: ChildProcess = spawn(
+      "opencode",
+      ["serve", `--hostname=${options.hostname}`, `--port=${options.port}`],
+      {
+        shell: false,
+        env: {
+          ...process.env,
+          OPENCODE_CONFIG_CONTENT: JSON.stringify(options.permission ? { permission: options.permission } : {}),
+        },
+      }
+    );
+
+    let settled = false;
+    let output = "";
+
+    const forceKill = () => {
+      child.kill("SIGTERM");
+      const killTimer = setTimeout(() => child.kill("SIGKILL"), SERVER_KILL_GRACE_MS);
+      killTimer.unref();
+    };
+
+    const startTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      forceKill();
+      reject(new Error(`Timeout waiting for opencode server to start after ${SERVER_START_TIMEOUT_MS}ms`));
+    }, SERVER_START_TIMEOUT_MS);
+    startTimer.unref();
+
+    child.stdout?.on("data", (chunk) => {
+      if (settled) return;
+      output += String(chunk);
+      const match = output.match(/opencode server listening on\s+(https?:\/\/\S+)/);
+      if (match) {
+        settled = true;
+        clearTimeout(startTimer);
+        resolve({ url: match[1], close: forceKill });
+      }
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(startTimer);
+      if (!settled) {
+        settled = true;
+        reject(new Error(`opencode serve exited with code ${code} before it started listening${output.trim() ? `: ${output.trim()}` : ""}`));
+      }
+    });
+    child.on("error", (err) => {
+      clearTimeout(startTimer);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+  });
+}
+
+function splitModel(model: string): { providerID: string; modelID: string } {
+  const idx = model.indexOf("/");
+  if (idx === -1) {
+    throw new Error(`OpencodeProvider: model must be "provider/model" (e.g. "anthropic/claude-sonnet-5"), got "${model}"`);
+  }
+  return { providerID: model.slice(0, idx), modelID: model.slice(idx + 1) };
+}
+
+/** Best-effort message from an SDK error body (parsed JSON, not necessarily an Error instance). */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const obj = error as { data?: { message?: unknown }; message?: unknown; name?: unknown };
+    if (typeof obj.data?.message === "string") return obj.data.message;
+    if (typeof obj.message === "string") return obj.message;
+    if (typeof obj.name === "string") return obj.name;
+  }
+  return "opencode server request failed";
+}
+
+function isTextPart(part: Part): part is Extract<Part, { type: "text" }> {
+  return part.type === "text";
+}
+
+/** Sums usage across every assistant message, but text/error come only from the last one. */
+function collectOutcome(messages: Array<{ info: Message; parts: Part[] }>): RunOutcome {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let costUsd = 0;
+  let last: { info: AssistantMessage; parts: Part[] } | undefined;
+
+  for (const entry of messages) {
+    if (entry.info.role !== "assistant") continue;
+    const info = entry.info;
+    inputTokens += info.tokens?.input ?? 0;
+    outputTokens += (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0);
+    costUsd += info.cost ?? 0;
+    last = { info, parts: entry.parts };
+  }
+
+  const text = last?.parts.filter(isTextPart).map((p) => p.text).join("") ?? "";
+  const errorMessage = last?.info.error ? describeError(last.info.error) : undefined;
+  return { text, inputTokens, outputTokens, costUsd, errorMessage };
+}
 
 /**
- * Wraps `opencode run --format json` as a `Provider`. Spawns one fresh,
- * session-less `opencode run` subprocess per `complete()` call (no `-c`/`-s`
- * reuse — every call is independent).
+ * Wraps opencode's HTTP server (via `@opencode-ai/sdk`'s client, talking to
+ * our own directly-spawned `opencode serve` process) as a `Provider`. Each
+ * `complete()` call spawns a fresh server (auto-assigned port so concurrent
+ * calls don't collide), creates one session, sends the prompt, and waits.
+ *
+ * opencode's own subagent delegation (the `delegate`/`task` tool — see
+ * https://opencode.ai/docs/agents/) is asynchronous: the model's own turn
+ * ends the moment it dispatches a delegation, well before the delegate
+ * finishes, and the delegate's result is delivered later as a message
+ * appended to the same session. A one-shot request/response cycle can't
+ * wait for that, so this provider keeps the server alive after the initial
+ * prompt resolves and polls `session.status`/`session.children` until every
+ * delegated child session goes idle, then — if the session's last message is
+ * still an unanswered notification rather than the model's own reply — sends
+ * a bounded number of follow-up prompts (`maxContinuations`) so the model can
+ * actually synthesize using the delegate's result. All of this is bounded by
+ * `timeoutMs` as the overall deadline.
  *
  * Implements `prepareSkill`/`cleanupSkill`: rather than injecting the skill
  * into the prompt, it symlinks every entry of the skill's directory (except
@@ -69,12 +205,12 @@ export class OpencodeProvider implements Provider {
   readonly capabilities = { systemRole: false, attachments: false, toolCalls: false };
   readonly name: string;
   readonly model: string;
-  private command: string;
   private agent?: string;
   private dir: string;
   private auto: boolean;
   private timeoutMs: number;
-  private extraArgs: string[];
+  private maxContinuations: number;
+  private baseUrl?: string;
 
   constructor(options: OpencodeOptions) {
     if (!options.model) {
@@ -82,12 +218,12 @@ export class OpencodeProvider implements Provider {
     }
     this.name = options.providerName ?? "opencode";
     this.model = options.model;
-    this.command = options.command ?? "opencode";
     this.agent = options.agent;
     this.dir = options.dir ?? process.cwd();
     this.auto = options.auto ?? false;
     this.timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
-    this.extraArgs = options.extraArgs ?? [];
+    this.maxContinuations = options.maxContinuations ?? 3;
+    this.baseUrl = options.baseUrl;
   }
 
   /**
@@ -123,30 +259,37 @@ export class OpencodeProvider implements Provider {
 
   async complete(prompt: string): Promise<ProviderResult> {
     const start = Date.now();
+    const deadline = start + this.timeoutMs;
+    let server: SpawnedServer | undefined;
+
     try {
-      const { stdout, stderr, exitCode, timedOut, killedAfterCompletion } = await this.runSubprocess(prompt);
+      let baseUrl = this.baseUrl;
+      if (!baseUrl) {
+        server = await spawnOpencodeServer({
+          hostname: "127.0.0.1",
+          port: 0,
+          permission: this.auto
+            ? { edit: "allow", bash: "allow", webfetch: "allow", doom_loop: "allow", external_directory: "allow" }
+            : undefined,
+        });
+        baseUrl = server.url;
+      }
+
+      const client = createOpencodeClient({ baseUrl, directory: this.dir });
+      const outcome = await this.runSession(client, prompt, deadline);
       const latencyMs = Date.now() - start;
-      const parsed = parseOpencodeNdjson(stdout);
 
-      if (timedOut) {
-        return this.errorResult(`opencode run timed out after ${this.timeoutMs}ms (killed)`, latencyMs, parsed);
+      if (outcome.errorMessage) {
+        return this.errorResult(outcome.errorMessage, latencyMs, outcome);
       }
-      if (parsed.errorMessage) {
-        return this.errorResult(parsed.errorMessage, latencyMs, parsed);
-      }
-      if (exitCode !== 0 && !killedAfterCompletion) {
-        const detail = stderr.trim().slice(-2000) || `exit code ${exitCode}`;
-        return this.errorResult(`opencode run failed: ${detail}`, latencyMs, parsed);
-      }
-
       return {
         provider: this.name,
         model: this.model,
-        output: parsed.text,
+        output: outcome.text,
         latencyMs,
-        inputTokens: parsed.inputTokens,
-        outputTokens: parsed.outputTokens,
-        costUsd: parsed.costUsd,
+        inputTokens: outcome.inputTokens,
+        outputTokens: outcome.outputTokens,
+        costUsd: outcome.costUsd,
       };
     } catch (err) {
       return {
@@ -159,176 +302,115 @@ export class OpencodeProvider implements Provider {
         costUsd: 0,
         error: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      server?.close();
     }
   }
 
-  private errorResult(message: string, latencyMs: number, parsed: ParsedRun): ProviderResult {
+  private errorResult(message: string, latencyMs: number, outcome: RunOutcome): ProviderResult {
     return {
       provider: this.name,
       model: this.model,
       output: "",
       latencyMs,
-      inputTokens: parsed.inputTokens,
-      outputTokens: parsed.outputTokens,
-      costUsd: parsed.costUsd,
+      inputTokens: outcome.inputTokens,
+      outputTokens: outcome.outputTokens,
+      costUsd: outcome.costUsd,
       error: message,
     };
   }
 
-  private buildArgs(): string[] {
-    const args = ["run", "--model", this.model, "--format", "json", "--dir", this.dir];
-    if (this.agent) args.push("--agent", this.agent);
-    if (this.auto) args.push("--auto");
-    args.push(...this.extraArgs);
-    return args;
-  }
+  private async runSession(
+    client: ReturnType<typeof createOpencodeClient>,
+    prompt: string,
+    deadline: number
+  ): Promise<RunOutcome> {
+    const model = splitModel(this.model);
 
-  private runSubprocess(stdinInput: string): Promise<{
-    stdout: string;
-    stderr: string;
-    exitCode: number | null;
-    timedOut: boolean;
-    /** True if we force-killed the process after seeing its completion signal, not because it errored/hung. */
-    killedAfterCompletion: boolean;
-  }> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.command, this.buildArgs(), {
-        cwd: this.dir,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let pendingLine = "";
-      let timedOut = false;
-      let killedAfterCompletion = false;
-      let completionSeen = false;
-      let settled = false;
-      let completionGraceTimer: ReturnType<typeof setTimeout> | undefined;
-
-      const forceKill = () => {
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
-      };
-
-      const killTimer = setTimeout(() => {
-        timedOut = true;
-        forceKill();
-      }, this.timeoutMs);
-      killTimer.unref();
-
-      child.stdout.on("data", (chunk) => {
-        const text = String(chunk);
-        stdout += text;
-        if (completionSeen) return;
-        pendingLine += text;
-        const lines = pendingLine.split("\n");
-        pendingLine = lines.pop() ?? "";
-        if (lines.some(isCompletionSignalLine)) {
-          completionSeen = true;
-          completionGraceTimer = setTimeout(() => {
-            killedAfterCompletion = true;
-            forceKill();
-          }, COMPLETION_GRACE_MS);
-          completionGraceTimer.unref();
-        }
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.stdin.on("error", () => {
-        // Ignore EPIPE if the process exits before we finish writing.
-      });
-
-      child.on("error", (err) => {
-        clearTimeout(killTimer);
-        if (completionGraceTimer) clearTimeout(completionGraceTimer);
-        if (!settled) {
-          settled = true;
-          reject(err);
-        }
-      });
-      child.on("close", (code) => {
-        clearTimeout(killTimer);
-        if (completionGraceTimer) clearTimeout(completionGraceTimer);
-        if (!settled) {
-          settled = true;
-          resolve({ stdout, stderr, exitCode: code, timedOut: timedOut && !completionSeen, killedAfterCompletion });
-        }
-      });
-
-      child.stdin.write(stdinInput);
-      child.stdin.end();
-    });
-  }
-}
-
-/** True if `line` is a `step_finish` event whose part signals the final answer (`reason === "stop"`). */
-function isCompletionSignalLine(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed) return false;
-  let event: any;
-  try {
-    event = JSON.parse(trimmed);
-  } catch {
-    return false;
-  }
-  return event?.type === "step_finish" && event?.part?.reason === "stop";
-}
-
-/**
- * Defensive line-by-line NDJSON parse of a full opencode `run --format json`
- * stdout buffer, parsed after the process exits (the `Provider` contract is
- * a single resolved Promise, not a stream).
- *
- * `text` parts are keyed by `part.id` (last write wins per id, joined in
- * first-seen order). `step_finish` token/cost fields are summed across every
- * occurrence — an agent run can take multiple internal steps (e.g. one to
- * call a tool, one to produce the final text). `reasoning` tokens are folded
- * into `outputTokens`; `cache` read/write are dropped (see README caveat on
- * non-comparable token counts). `error` events short-circuit to
- * `errorMessage`; unknown event types and malformed lines are ignored.
- */
-function parseOpencodeNdjson(stdout: string): ParsedRun {
-  const textById = new Map<string, string>();
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let costUsd = 0;
-  let errorMessage: string | undefined;
-
-  for (const rawLine of stdout.split("\n")) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
+    const created = await client.session.create({ signal: this.remainingSignal(deadline) });
+    if (created.error) {
+      return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(created.error) };
     }
-    switch (event?.type) {
-      case "text": {
-        const part = event.part;
-        if (part?.id && typeof part.text === "string") textById.set(part.id, part.text);
-        break;
+    const sessionId = created.data.id;
+
+    const sendPrompt = (text: string) =>
+      client.session.prompt({
+        path: { id: sessionId },
+        body: { agent: this.agent, model, parts: [{ type: "text", text }] },
+        signal: this.remainingSignal(deadline),
+      });
+
+    const first = await sendPrompt(prompt);
+    if (first.error) {
+      return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(first.error) };
+    }
+
+    let continuations = 0;
+    while (true) {
+      const idle = await this.waitForIdle(client, sessionId, deadline);
+      if (!idle) {
+        return {
+          text: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          errorMessage: `opencode run timed out after ${this.timeoutMs}ms waiting for delegated work to finish`,
+        };
       }
-      case "step_finish": {
-        const tokens = event.part?.tokens;
-        if (tokens) {
-          inputTokens += tokens.input ?? 0;
-          outputTokens += (tokens.output ?? 0) + (tokens.reasoning ?? 0);
-        }
-        if (typeof event.part?.cost === "number") costUsd += event.part.cost;
-        break;
+
+      const messagesResult = await client.session.messages({
+        path: { id: sessionId },
+        signal: this.remainingSignal(deadline),
+      });
+      if (messagesResult.error) {
+        return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(messagesResult.error) };
       }
-      case "error": {
-        errorMessage = event.error?.data?.message ?? event.error?.name ?? "opencode run reported an error";
-        break;
+      const messages = messagesResult.data;
+      const lastMessage = messages[messages.length - 1];
+
+      // The model's own reply (not a still-unanswered notification) is the real end of the turn.
+      if (lastMessage?.info.role !== "user") {
+        return collectOutcome(messages);
       }
-      default:
-        break;
+
+      if (continuations >= this.maxContinuations || Date.now() >= deadline) {
+        return {
+          ...collectOutcome(messages),
+          errorMessage: `opencode run: gave up after ${continuations} follow-up prompt(s) waiting for the model to use a delegated subagent's result`,
+        };
+      }
+
+      continuations++;
+      const cont = await sendPrompt("Continue.");
+      if (cont.error) {
+        return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(cont.error) };
+      }
     }
   }
 
-  return { text: Array.from(textById.values()).join(""), inputTokens, outputTokens, costUsd, errorMessage };
+  /** Polls until the session and every delegated child session report non-busy, or the deadline passes. */
+  private async waitForIdle(
+    client: ReturnType<typeof createOpencodeClient>,
+    sessionId: string,
+    deadline: number
+  ): Promise<boolean> {
+    while (true) {
+      const childrenResult = await client.session.children({ path: { id: sessionId }, signal: this.remainingSignal(deadline) });
+      const childIds = (childrenResult.data ?? []).map((session) => session.id);
+      const statusResult = await client.session.status({ signal: this.remainingSignal(deadline) });
+      const statusById = statusResult.data ?? {};
+
+      const allIdle = [sessionId, ...childIds].every((id) => {
+        const type = statusById[id]?.type ?? "idle";
+        return type !== "busy" && type !== "retry";
+      });
+      if (allIdle) return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+    }
+  }
+
+  private remainingSignal(deadline: number): AbortSignal {
+    return AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+  }
 }

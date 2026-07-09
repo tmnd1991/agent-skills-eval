@@ -1,16 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createFakeOpencodeServer } from "./fixtures/fake-opencode-server.mjs";
 
 const execFileAsync = promisify(execFile);
-const fakeOpencodePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-opencode.mjs");
-chmodSync(fakeOpencodePath, 0o755);
 
 function tempRoot() {
   return mkdtempSync(path.join(tmpdir(), "agent-skills-eval-cli-"));
@@ -143,45 +141,50 @@ test("CLI runs from YAML config and writes JSONL logs plus report artifacts", as
   }
 });
 
-test("CLI --run-mode opencode skips API credential requirements and runs via the opencode CLI", async () => {
+test("CLI --run-mode opencode skips API credential requirements and runs via the opencode server", async () => {
   const root = tempRoot();
   writeSkill(root);
   const workspace = path.join(root, "workspace");
   const configPath = path.join(root, "agent-skills-eval.yaml");
   const logFile = path.join(root, "events.jsonl");
+  const fakeServer = await createFakeOpencodeServer();
 
-  writeFileSync(configPath, [
-    `root: ${JSON.stringify(root)}`,
-    `workspace: ${JSON.stringify(workspace)}`,
-    "baseline: true",
-    "target: fake/model",
-    "judge: fake/model",
-    "runMode: opencode",
-    "opencode:",
-    `  command: ${JSON.stringify(fakeOpencodePath)}`,
-    "  timeoutMs: 60000",
-    "  judgeTimeoutMs: 120000",
-    "layout: iteration",
-    "strict: true",
-    "report:",
-    "  enabled: false",
-    "logging:",
-    "  format: jsonl",
-    `  file: ${JSON.stringify(logFile)}`,
-  ].join("\n"));
+  try {
+    writeFileSync(configPath, [
+      `root: ${JSON.stringify(root)}`,
+      `workspace: ${JSON.stringify(workspace)}`,
+      "baseline: true",
+      "target: fake/model",
+      "judge: fake/model",
+      "runMode: opencode",
+      "opencode:",
+      `  baseUrl: ${JSON.stringify(fakeServer.url)}`,
+      "  timeoutMs: 60000",
+      "  judgeTimeoutMs: 120000",
+      "layout: iteration",
+      "strict: true",
+      "report:",
+      "  enabled: false",
+      "logging:",
+      "  format: jsonl",
+      `  file: ${JSON.stringify(logFile)}`,
+    ].join("\n"));
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    ["dist/cli.js", "--config", configPath],
-    {
-      cwd: path.resolve("."),
-      env: { ...process.env, OPENAI_API_KEY: "", OPENAI_BASE_URL: "" },
-    },
-  );
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["dist/cli.js", "--config", configPath],
+      {
+        cwd: path.resolve("."),
+        env: { ...process.env, OPENAI_API_KEY: "", OPENAI_BASE_URL: "" },
+      },
+    );
 
-  const result = JSON.parse(stdout);
-  assert.equal(result.failed, 0);
-  assert.ok(existsSync(path.join(workspace, "iteration-1", "eval-top-month", "with_skill", "grading.json")));
+    const result = JSON.parse(stdout);
+    assert.equal(result.failed, 0);
+    assert.ok(existsSync(path.join(workspace, "iteration-1", "eval-top-month", "with_skill", "grading.json")));
+  } finally {
+    await fakeServer.close();
+  }
 });
 
 test("CLI --run-mode bogus fails validation with a clear error", async () => {
@@ -215,8 +218,6 @@ test("CLI --opencode-judge-timeout rejects non-positive values", async () => {
         "opencode",
         "--target",
         "fake/model",
-        "--opencode-command",
-        fakeOpencodePath,
         "--opencode-judge-timeout",
         "0",
       ],

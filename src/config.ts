@@ -7,13 +7,14 @@ export type WorkspaceLayout = "flat" | "iteration";
 export type ProviderRunMode = "api" | "opencode";
 
 export interface OpencodeConfig {
-  command?: string;
   agent?: string;
   auto?: boolean;
   dir?: string;
   timeoutMs?: number;
   /** Timeout for judge/grader calls. Defaults to `timeoutMs`. Judge sessions read a full transcript plus output files and are often slower than the executor run they grade. */
   judgeTimeoutMs?: number;
+  /** Talk to an already-running `opencode serve` instead of spawning one. Mainly for tests, but also useful to share one server across multiple invocations. */
+  baseUrl?: string;
 }
 
 export interface AgentSkillsEvalConfig {
@@ -108,12 +109,12 @@ function parseOpencode(value: unknown): OpencodeConfig | undefined {
   if (value === undefined || value === null) return undefined;
   const record = asRecord(value, "opencode");
   return {
-    command: asString(record.command, "opencode.command"),
     agent: asString(record.agent, "opencode.agent"),
     auto: asBoolean(record.auto, "opencode.auto"),
     dir: asString(record.dir, "opencode.dir"),
     timeoutMs: asNumber(record.timeoutMs, "opencode.timeoutMs"),
     judgeTimeoutMs: asNumber(record.judgeTimeoutMs, "opencode.judgeTimeoutMs"),
+    baseUrl: asString(record.baseUrl, "opencode.baseUrl"),
   };
 }
 

@@ -17,7 +17,6 @@ interface CliOptions {
   baseUrl?: string;
   apiKeyEnv?: string;
   runMode?: "api" | "opencode";
-  opencodeCommand?: string;
   opencodeAgent?: string;
   opencodeAuto?: boolean;
   opencodeDir?: string;
@@ -79,7 +78,6 @@ async function main(): Promise<void> {
     .option("--base-url <url>", "OpenAI-compatible API base URL")
     .option("--api-key-env <name>", "Environment variable containing the API key")
     .option("--run-mode <mode>", "Execution mode: api (default) or opencode")
-    .option("--opencode-command <path>", "Path to the opencode binary")
     .option("--opencode-agent <name>", "opencode --agent to use")
     .option("--opencode-auto", "Auto-approve opencode permissions (dangerous)")
     .option("--no-opencode-auto", "Disable opencode auto-approve, overriding config file")
@@ -128,8 +126,8 @@ async function main(): Promise<void> {
   const logFile = opts.logFile ?? config.logging?.file;
   const verbose = opts.verbose ?? config.logging?.verbose ?? false;
   const color = opts.color ?? config.logging?.color ?? "auto";
-  const opencodeCommand = opts.opencodeCommand ?? config.opencode?.command ?? "opencode";
   const opencodeAgent = opts.opencodeAgent ?? config.opencode?.agent;
+  const opencodeBaseUrl = config.opencode?.baseUrl;
   const opencodeAuto = opts.opencodeAuto ?? config.opencode?.auto ?? false;
   const opencodeDir = opts.opencodeDir ?? config.opencode?.dir ?? process.cwd();
   const opencodeTimeoutMs =
@@ -179,20 +177,20 @@ async function main(): Promise<void> {
     target = new OpencodeProvider({
       providerName: "opencode",
       model: targetModel,
-      command: opencodeCommand,
       agent: opencodeAgent,
       dir: opencodeDir,
       auto: opencodeAuto,
       timeoutMs: opencodeTimeoutMs,
+      baseUrl: opencodeBaseUrl,
     });
     judge = new OpencodeProvider({
       providerName: "opencode",
       model: judgeModel,
-      command: opencodeCommand,
       agent: opencodeAgent,
       dir: opencodeDir,
       auto: opencodeAuto,
       timeoutMs: opencodeJudgeTimeoutMs,
+      baseUrl: opencodeBaseUrl,
     });
   } else {
     const creds = requireApiCredentials(baseUrl, apiKey, apiKeyEnv);

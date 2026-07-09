@@ -14,17 +14,15 @@
 # opencode's bash/file-edit tool prompts) but it's a real, unattended
 # auto-approval of tool use in that directory — see the opencode-provider
 # README section before flipping it on elsewhere.
-root: ./examples
+root: ./examples/quick-review
 workspace: ./agent-skills-workspace
 baseline: true
-target: anthropic/claude-sonnet-5
+target: tensorix/minimax/minimax-m3
 runMode: opencode
 opencode:
   dir: ./examples/quick-review/evals/fixture-repo
   auto: true
   timeoutMs: 300000
-include:
-  - "quick-review"
 concurrency: 1
 layout: iteration
 strict: true
