@@ -257,7 +257,7 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
       timing,
       grading,
       rawOutput,
-      [],
+      completion.outputFiles ?? [],
       {
         system,
         user: userMessage,

@@ -40,6 +40,8 @@ export interface ProviderResult {
   costUsd: number;
   error?: string;
   toolCalls?: ToolCall[];
+  /** Provider-specific debug artifacts written alongside the run's other outputs (e.g. opencode's own server log). */
+  outputFiles?: { path: string; content: string | Buffer }[];
 }
 
 export interface CompleteChatArgs {

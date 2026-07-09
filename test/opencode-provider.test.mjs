@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { OpencodeProvider } from "../dist/index.js";
@@ -34,6 +34,45 @@ test("OpencodeProvider.complete: success path returns the assistant's text and u
     assert.equal(result.model, "fake/model");
   } finally {
     await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: talking to an already-running server (baseUrl) attaches no server log — nothing was spawned", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url);
+    const result = await p.complete("hello world");
+    assert.equal(result.outputFiles, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: when it spawns its own opencode server, captures the full stdout+stderr log — including everything logged after startup", async () => {
+  const binDir = mkdtempSync(path.join(tmpdir(), "opencode-bin-"));
+  const fakeBinaryPath = path.resolve("test/fixtures/fake-opencode-binary.mjs");
+  const wrapperPath = path.join(binDir, "opencode");
+  writeFileSync(wrapperPath, `#!/bin/sh\nexec node ${JSON.stringify(fakeBinaryPath)} "$@"\n`);
+  chmodSync(wrapperPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${originalPath}`;
+  try {
+    const p = new OpencodeProvider({ model: "fake/model", timeoutMs: 10_000 });
+    // Uses the delegate-race scenario (~300ms of polling before it resolves,
+    // see the fixture) so the run outlasts the fake binary's 50ms
+    // post-startup log write — proving capture isn't cut off at "settled"
+    // the way a fast-resolving prompt wouldn't reliably exercise.
+    const result = await p.complete("__FAKE_OPENCODE_DELEGATE_RACE__");
+    assert.equal(result.error, undefined);
+    assert.equal(result.output, "FAKE_OPENCODE_REAL_ANSWER");
+    const log = result.outputFiles?.find((f) => f.path === "opencode-serve.log");
+    assert.ok(log, "expected an opencode-serve.log output file");
+    assert.match(log.content, /opencode server listening on/);
+    assert.match(log.content, /post-startup stdout line/);
+    assert.match(log.content, /post-startup stderr line/);
+  } finally {
+    process.env.PATH = originalPath;
   }
 });
 

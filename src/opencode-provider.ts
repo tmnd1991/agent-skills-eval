@@ -46,6 +46,8 @@ function sleep(ms: number): Promise<void> {
 interface SpawnedServer {
   url: string;
   close(): void;
+  /** Combined stdout+stderr of the child process so far, including everything logged after startup. */
+  getLog(): string;
 }
 
 /**
@@ -91,13 +93,13 @@ function spawnOpencodeServer(options: {
     startTimer.unref();
 
     child.stdout?.on("data", (chunk) => {
-      if (settled) return;
       output += String(chunk);
+      if (settled) return;
       const match = output.match(/opencode server listening on\s+(https?:\/\/\S+)/);
       if (match) {
         settled = true;
         clearTimeout(startTimer);
-        resolve({ url: match[1], close: forceKill });
+        resolve({ url: match[1], close: forceKill, getLog: () => output });
       }
     });
     child.stderr?.on("data", (chunk) => {
@@ -340,29 +342,35 @@ export class OpencodeProvider implements Provider {
       const latencyMs = Date.now() - start;
 
       if (outcome.errorMessage) {
-        return this.errorResult(outcome.errorMessage, latencyMs, outcome);
+        return this.withServerLog(this.errorResult(outcome.errorMessage, latencyMs, outcome), server);
       }
-      return {
-        provider: this.name,
-        model: this.model,
-        output: outcome.text,
-        latencyMs,
-        inputTokens: outcome.inputTokens,
-        outputTokens: outcome.outputTokens,
-        costUsd: outcome.costUsd,
-        toolCalls: outcome.toolCalls,
-      };
+      return this.withServerLog(
+        {
+          provider: this.name,
+          model: this.model,
+          output: outcome.text,
+          latencyMs,
+          inputTokens: outcome.inputTokens,
+          outputTokens: outcome.outputTokens,
+          costUsd: outcome.costUsd,
+          toolCalls: outcome.toolCalls,
+        },
+        server
+      );
     } catch (err) {
-      return {
-        provider: this.name,
-        model: this.model,
-        output: "",
-        latencyMs: Date.now() - start,
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsd: 0,
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return this.withServerLog(
+        {
+          provider: this.name,
+          model: this.model,
+          output: "",
+          latencyMs: Date.now() - start,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        server
+      );
     } finally {
       server?.close();
     }
@@ -380,6 +388,12 @@ export class OpencodeProvider implements Provider {
       toolCalls: outcome.toolCalls,
       error: message,
     };
+  }
+
+  /** Attaches the spawned server's combined stdout+stderr as a debug artifact, when we actually spawned one (not when talking to an external `baseUrl`). */
+  private withServerLog(result: ProviderResult, server: SpawnedServer | undefined): ProviderResult {
+    if (!server) return result;
+    return { ...result, outputFiles: [{ path: "opencode-serve.log", content: server.getLog() }] };
   }
 
   private async runSession(
