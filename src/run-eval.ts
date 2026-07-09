@@ -231,7 +231,10 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
     } finally {
       if (nativeSkillLoading) await args.target.provider.cleanupSkill?.(args.skill, mode);
     }
-    const rawOutput = completion.error ? `ERROR: ${completion.error}` : completion.output;
+    const rawOutput = completion.error
+      ? `ERROR: ${completion.error}` +
+        (completion.output ? `\n\n---partial output---\n${completion.output}` : "")
+      : completion.output;
     const toolCalls = completion.toolCalls;
     const assertions =
       args.eval.assertions && args.eval.assertions.length > 0
@@ -254,7 +257,7 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
       timing,
       grading,
       rawOutput,
-      [{ path: "output.txt", content: rawOutput }],
+      [],
       {
         system,
         user: userMessage,

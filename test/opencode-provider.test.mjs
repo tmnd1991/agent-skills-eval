@@ -85,6 +85,49 @@ test("OpencodeProvider.complete: gives up after maxContinuations instead of loop
     const p = provider(server.url, { timeoutMs: 10_000, maxContinuations: 2 });
     const result = await p.complete("__FAKE_OPENCODE_INFINITE_DELEGATE__");
     assert.match(result.error, /gave up after 2 follow-up/);
+    // The give-up path shouldn't discard text a prior, already-answered
+    // round actually produced just because the run ultimately errored.
+    assert.match(result.output, /Delegation running/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: recovers text from an earlier step-message even when the turn's final message is tool-only", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url);
+    const result = await p.complete("__FAKE_OPENCODE_TOOL_ONLY_FINAL__");
+    assert.equal(result.error, undefined);
+    assert.equal(result.output, "Full review text here.");
+    assert.ok(result.toolCalls?.some((c) => c.function.name === "todowrite"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: a turn with no text anywhere surfaces a diagnostic error instead of a silent empty success", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url);
+    const result = await p.complete("__FAKE_OPENCODE_NO_TEXT__");
+    assert.equal(result.output, "");
+    assert.match(result.error, /produced no text output/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: captures tool calls, including a skill invocation with its parsed arguments", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url);
+    const result = await p.complete("__FAKE_OPENCODE_SKILL_TOOL__");
+    assert.equal(result.error, undefined);
+    assert.equal(result.output, "Review complete.");
+    const skillCall = result.toolCalls?.find((c) => c.function.name === "skill");
+    assert.ok(skillCall, "expected a skill tool call to be captured");
+    assert.equal(skillCall.parsedArguments.name, "quick-review");
   } finally {
     await server.close();
   }

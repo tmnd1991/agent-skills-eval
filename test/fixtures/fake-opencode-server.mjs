@@ -79,6 +79,44 @@ export function createFakeOpencodeServer() {
     };
   }
 
+  function toolOnlyAssistantMessage(sessionId, toolName, input, overrides = {}) {
+    const msgId = nextId("msg");
+    return {
+      info: {
+        id: msgId,
+        sessionID: sessionId,
+        role: "assistant",
+        time: { created: Date.now(), completed: Date.now() },
+        parentID: "",
+        modelID: "fake-model",
+        providerID: "fake",
+        mode: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: overrides.cost ?? 0.00005,
+        tokens: overrides.tokens ?? { input: 5, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+        finish: "tool-calls",
+      },
+      parts: [
+        {
+          id: nextId("prt"),
+          sessionID: sessionId,
+          messageID: msgId,
+          type: "tool",
+          callID: nextId("call"),
+          tool: toolName,
+          state: {
+            status: "completed",
+            input,
+            output: "ok",
+            title: toolName,
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        },
+      ],
+    };
+  }
+
   function taskNotification(sessionId, text) {
     const msgId = nextId("msg");
     return {
@@ -117,6 +155,12 @@ export function createFakeOpencodeServer() {
         session.scenario = "infinite-delegate";
       } else if (text.startsWith("__FAKE_OPENCODE_ECHO__")) {
         session.scenario = "echo";
+      } else if (text.includes("__FAKE_OPENCODE_TOOL_ONLY_FINAL__")) {
+        session.scenario = "tool-only-final";
+      } else if (text.includes("__FAKE_OPENCODE_NO_TEXT__")) {
+        session.scenario = "no-text";
+      } else if (text.includes("__FAKE_OPENCODE_SKILL_TOOL__")) {
+        session.scenario = "skill-tool";
       } else if (/Assertions:\n[\s\S]*?\nModel output:/.test(text)) {
         session.scenario = "judge";
       } else {
@@ -160,6 +204,33 @@ export function createFakeOpencodeServer() {
         const message = assistantMessage(session.id, JSON.stringify(grading));
         session.messages.push(message);
         respondJson(res, 200, message);
+        return;
+      }
+      case "tool-only-final": {
+        // Simulates opencode splitting one turn across two step-messages: the
+        // real answer lands in an earlier message, and the turn's last step
+        // is a text-less tool call (e.g. a trailing todo-list update).
+        const textMessage = assistantMessage(session.id, "Full review text here.");
+        session.messages.push(textMessage);
+        const toolMessage = toolOnlyAssistantMessage(session.id, "todowrite", { todos: [] });
+        session.messages.push(toolMessage);
+        respondJson(res, 200, toolMessage);
+        return;
+      }
+      case "no-text": {
+        // The entire turn is a single tool-only message — genuinely no text
+        // was ever produced.
+        const toolMessage = toolOnlyAssistantMessage(session.id, "bash", { command: "echo hi" });
+        session.messages.push(toolMessage);
+        respondJson(res, 200, toolMessage);
+        return;
+      }
+      case "skill-tool": {
+        const toolMessage = toolOnlyAssistantMessage(session.id, "skill", { name: "quick-review" });
+        session.messages.push(toolMessage);
+        const textMessage = assistantMessage(session.id, "Review complete.");
+        session.messages.push(textMessage);
+        respondJson(res, 200, textMessage);
         return;
       }
       case "delegate-race": {

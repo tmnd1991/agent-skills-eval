@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import type { AssistantMessage, Message, Part } from "@opencode-ai/sdk";
-import type { Provider, ProviderResult, SkillSource } from "./provider.js";
+import type { Provider, ProviderResult, SkillSource, ToolCall } from "./provider.js";
 
 export interface OpencodeOptions {
   /** Shown as `provider` in ProviderResult. Default "opencode". */
@@ -26,6 +26,7 @@ export interface OpencodeOptions {
 
 interface RunOutcome {
   text: string;
+  toolCalls: ToolCall[];
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
@@ -143,12 +144,42 @@ function isTextPart(part: Part): part is Extract<Part, { type: "text" }> {
   return part.type === "text";
 }
 
-/** Sums usage across every assistant message, but text/error come only from the last one. */
+function isToolPart(part: Part): part is Extract<Part, { type: "tool" }> {
+  return part.type === "tool";
+}
+
+function toolCallFrom(part: Extract<Part, { type: "tool" }>): ToolCall {
+  const input = part.state.input;
+  return {
+    id: part.callID,
+    type: "function",
+    function: { name: part.tool, arguments: JSON.stringify(input) },
+    parsedArguments: input,
+  };
+}
+
+/**
+ * Sums token/cost usage across every assistant message in the session (each
+ * internal tool-calling "step" opencode takes gets its own message record).
+ * Tool calls are likewise gathered from every assistant message, since "was
+ * a tool ever called this run" shouldn't depend on which step it happened
+ * in. Text, however, is gathered only from the assistant messages belonging
+ * to the last *answered* turn — a turn's closing step can be a text-less
+ * tool call (e.g. a trailing todo-list update) even though an earlier step
+ * already delivered the real answer, so taking text from every message
+ * risks concatenating in stale content from a superseded earlier turn, and
+ * taking it only from the very last message risks losing the answer
+ * entirely. This also has to tolerate being called while the session's
+ * last message is itself an unanswered notification (the "gave up after N
+ * follow-ups" path) — in that case the real content is the turn *before*
+ * that trailing notification, not nothing.
+ */
 function collectOutcome(messages: Array<{ info: Message; parts: Part[] }>): RunOutcome {
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
-  let last: { info: AssistantMessage; parts: Part[] } | undefined;
+  let lastAssistant: AssistantMessage | undefined;
+  const toolCalls: ToolCall[] = [];
 
   for (const entry of messages) {
     if (entry.info.role !== "assistant") continue;
@@ -156,12 +187,41 @@ function collectOutcome(messages: Array<{ info: Message; parts: Part[] }>): RunO
     inputTokens += info.tokens?.input ?? 0;
     outputTokens += (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0);
     costUsd += info.cost ?? 0;
-    last = { info, parts: entry.parts };
+    lastAssistant = info;
+    toolCalls.push(...entry.parts.filter(isToolPart).map(toolCallFrom));
   }
 
-  const text = last?.parts.filter(isTextPart).map((p) => p.text).join("") ?? "";
-  const errorMessage = last?.info.error ? describeError(last.info.error) : undefined;
-  return { text, inputTokens, outputTokens, costUsd, errorMessage };
+  // Find the boundary of the last *answered* turn: scanning from the end,
+  // skip over a trailing user message that has no assistant reply yet (an
+  // unanswered delegation notification — the "gave up after N follow-ups"
+  // path calls this while one is still sitting unanswered) and keep looking
+  // until we hit a user message that assistant messages actually followed.
+  let boundary = -1;
+  let sawAssistant = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const role = messages[i].info.role;
+    if (role === "assistant") {
+      sawAssistant = true;
+      continue;
+    }
+    if (role === "user" && sawAssistant) {
+      boundary = i;
+      break;
+    }
+  }
+  const text = messages
+    .slice(boundary + 1)
+    .filter((entry) => entry.info.role === "assistant")
+    .flatMap((entry) => entry.parts)
+    .filter(isTextPart)
+    .map((p) => p.text)
+    .join("");
+
+  let errorMessage = lastAssistant?.error ? describeError(lastAssistant.error) : undefined;
+  if (!text && !errorMessage) {
+    errorMessage = `opencode run completed with ${toolCalls.length} tool call(s) but produced no text output`;
+  }
+  return { text, toolCalls, inputTokens, outputTokens, costUsd, errorMessage };
 }
 
 /**
@@ -290,6 +350,7 @@ export class OpencodeProvider implements Provider {
         inputTokens: outcome.inputTokens,
         outputTokens: outcome.outputTokens,
         costUsd: outcome.costUsd,
+        toolCalls: outcome.toolCalls,
       };
     } catch (err) {
       return {
@@ -311,11 +372,12 @@ export class OpencodeProvider implements Provider {
     return {
       provider: this.name,
       model: this.model,
-      output: "",
+      output: outcome.text,
       latencyMs,
       inputTokens: outcome.inputTokens,
       outputTokens: outcome.outputTokens,
       costUsd: outcome.costUsd,
+      toolCalls: outcome.toolCalls,
       error: message,
     };
   }
@@ -329,7 +391,7 @@ export class OpencodeProvider implements Provider {
 
     const created = await client.session.create({ signal: this.remainingSignal(deadline) });
     if (created.error) {
-      return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(created.error) };
+      return { text: "", toolCalls: [], inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(created.error) };
     }
     const sessionId = created.data.id;
 
@@ -342,7 +404,7 @@ export class OpencodeProvider implements Provider {
 
     const first = await sendPrompt(prompt);
     if (first.error) {
-      return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(first.error) };
+      return { text: "", toolCalls: [], inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(first.error) };
     }
 
     let continuations = 0;
@@ -351,6 +413,7 @@ export class OpencodeProvider implements Provider {
       if (!idle) {
         return {
           text: "",
+          toolCalls: [],
           inputTokens: 0,
           outputTokens: 0,
           costUsd: 0,
@@ -363,7 +426,7 @@ export class OpencodeProvider implements Provider {
         signal: this.remainingSignal(deadline),
       });
       if (messagesResult.error) {
-        return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(messagesResult.error) };
+        return { text: "", toolCalls: [], inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(messagesResult.error) };
       }
       const messages = messagesResult.data;
       const lastMessage = messages[messages.length - 1];
@@ -383,7 +446,7 @@ export class OpencodeProvider implements Provider {
       continuations++;
       const cont = await sendPrompt("Continue.");
       if (cont.error) {
-        return { text: "", inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(cont.error) };
+        return { text: "", toolCalls: [], inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(cont.error) };
       }
     }
   }

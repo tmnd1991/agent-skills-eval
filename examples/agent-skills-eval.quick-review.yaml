@@ -22,7 +22,7 @@ runMode: opencode
 opencode:
   dir: ./examples/quick-review/evals/fixture-repo
   auto: true
-  timeoutMs: 300000
+  timeoutMs: 600000
 concurrency: 1
 layout: iteration
 strict: true
