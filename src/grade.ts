@@ -11,7 +11,7 @@ export interface AssertionResult {
 
 export interface GradingJson {
   assertion_results: AssertionResult[];
-  summary: { passed: number; failed: number; total: number; pass_rate: number };
+  summary: { passed: number; failed: number; total: number; pass_rate: number | null };
 }
 
 export interface GradeOutputsArgs {
@@ -54,7 +54,7 @@ function summarize(grades: AssertionResult[]): GradingJson["summary"] {
   const passed = grades.filter((r) => r.passed).length;
   const total = grades.length;
   const failed = total - passed;
-  return { passed, failed, total, pass_rate: total === 0 ? 1 : passed / total };
+  return { passed, failed, total, pass_rate: total === 0 ? null : passed / total };
 }
 
 function normalizeRubricGrading(raw: unknown, assertions: string[]): AssertionResult[] {

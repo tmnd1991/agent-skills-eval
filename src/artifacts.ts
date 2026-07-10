@@ -38,7 +38,7 @@ export interface AggStats {
 
 export interface RunStats {
   mode: RunMode;
-  passRate: number;
+  passRate: number | null;
   durationMs: number;
   tokens: number;
 }
@@ -102,7 +102,9 @@ function round(value: number): number {
 }
 
 function aggregate(values: RunStats[]): AggStats {
-  const passRates = values.map((run) => run.passRate);
+  const passRates = values
+    .map((run) => run.passRate)
+    .filter((rate): rate is number => rate !== null);
   const seconds = values.map((run) => run.durationMs / 1000);
   const tokens = values.map((run) => run.tokens);
   return {

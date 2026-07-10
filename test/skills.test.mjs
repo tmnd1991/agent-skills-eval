@@ -885,3 +885,106 @@ test("tool-arg-equals ignores object key order but stays array order-sensitive",
   );
   assert.equal(nan[0].passed, true);
 });
+
+test("gradeOutputs reports pass_rate: null (not 1) when there is nothing to grade", async () => {
+  const result = await gradeOutputs({
+    modelOutput: "anything",
+    assertions: [],
+    judge: { model: "judge", provider: judgeProvider(true) },
+  });
+  assert.equal(result.grading.summary.total, 0);
+  assert.equal(result.grading.summary.pass_rate, null);
+});
+
+test("evaluateSkills reports passRate: null (not 1) for a skill whose eval cases declare no assertions", async () => {
+  const root = tempRoot();
+  const name = "no-assertions-skill";
+  const dir = path.join(root, name);
+  mkdirSync(path.join(dir, "evals"), { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: Has no gradeable assertions.\n---\n\nBody.\n`);
+  writeFileSync(path.join(dir, "evals", "evals.json"), JSON.stringify({
+    skill_name: name,
+    evals: [{ id: 1, name: "ungraded-case", prompt: "do something" }],
+  }));
+
+  const workspace = path.join(root, "workspace");
+  const result = await evaluateSkills({
+    root,
+    workspace,
+    target: { model: "target", provider: provider("some output") },
+    judge: { model: "judge", provider: judgeProvider(true) },
+    report: false,
+  });
+  assert.equal(result.skills.length, 1);
+  assert.equal(result.skills[0].passRate, null);
+});
+
+test("generateReport shows a 'no assertions' badge (not a 100% one) for a zero-assertion skill", () => {
+  const root = tempRoot();
+  const workspace = path.join(root, "workspace");
+  const skillDir = path.join(workspace, "ungraded-skill");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(
+    path.join(skillDir, "meta.json"),
+    JSON.stringify({ name: "ungraded-skill", slug: "ungraded-skill", relPath: "ungraded-skill", modes: ["with_skill"] }),
+  );
+
+  const runDir = path.join(skillDir, "eval-ungraded-case", "with_skill");
+  mkdirSync(path.join(runDir, "outputs"), { recursive: true });
+  writeFileSync(
+    path.join(runDir, "grading.json"),
+    JSON.stringify({ assertion_results: [], summary: { passed: 0, failed: 0, total: 0, pass_rate: null } }),
+  );
+  writeFileSync(path.join(runDir, "timing.json"), JSON.stringify({ total_tokens: 5, duration_ms: 10 }));
+  writeFileSync(path.join(runDir, "outputs", "response.txt"), "some output");
+  writeFileSync(path.join(runDir, "prompts.json"), JSON.stringify({ user: "do something", fileCount: 0 }));
+
+  const result = generateReport({ workspace });
+  assert.ok(existsSync(result.reportPath));
+
+  const html = readFileSync(result.reportPath, "utf8");
+  assert.match(html, /no assertions/);
+  assert.doesNotMatch(html, /100\.0%/);
+});
+
+test("generateReport does not flag a regression when the with_skill run has zero assertions", () => {
+  const root = tempRoot();
+  const workspace = path.join(root, "workspace");
+  const skillDir = path.join(workspace, "flaky-skill");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(
+    path.join(skillDir, "meta.json"),
+    JSON.stringify({ name: "flaky-skill", slug: "flaky-skill", relPath: "flaky-skill", modes: ["with_skill", "without_skill"] }),
+  );
+
+  const evalDir = path.join(skillDir, "eval-case");
+  const withDir = path.join(evalDir, "with_skill");
+  const withoutDir = path.join(evalDir, "without_skill");
+  mkdirSync(path.join(withDir, "outputs"), { recursive: true });
+  mkdirSync(path.join(withoutDir, "outputs"), { recursive: true });
+
+  // with_skill: nothing graded (total: 0, pass_rate: null).
+  writeFileSync(
+    path.join(withDir, "grading.json"),
+    JSON.stringify({ assertion_results: [], summary: { passed: 0, failed: 0, total: 0, pass_rate: null } }),
+  );
+  writeFileSync(path.join(withDir, "timing.json"), JSON.stringify({ total_tokens: 5, duration_ms: 10 }));
+  writeFileSync(path.join(withDir, "outputs", "response.txt"), "with-skill output");
+  writeFileSync(path.join(withDir, "prompts.json"), JSON.stringify({ user: "do it", fileCount: 0 }));
+
+  // without_skill: a genuine pass.
+  writeFileSync(
+    path.join(withoutDir, "grading.json"),
+    JSON.stringify({
+      assertion_results: [{ text: "ok", passed: true, evidence: "ok" }],
+      summary: { passed: 1, failed: 0, total: 1, pass_rate: 1 },
+    }),
+  );
+  writeFileSync(path.join(withoutDir, "timing.json"), JSON.stringify({ total_tokens: 5, duration_ms: 10 }));
+  writeFileSync(path.join(withoutDir, "outputs", "response.txt"), "without-skill output");
+  writeFileSync(path.join(withoutDir, "prompts.json"), JSON.stringify({ user: "do it", fileCount: 0 }));
+
+  const result = generateReport({ workspace });
+  const html = readFileSync(result.reportPath, "utf8");
+  assert.doesNotMatch(html, /baseline tied\/won/);
+});

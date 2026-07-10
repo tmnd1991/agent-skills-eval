@@ -80,7 +80,7 @@ export interface AssertionResult {
 
 export interface GradingJson {
   assertion_results: AssertionResult[];
-  summary: { passed: number; failed: number; total: number; pass_rate: number };
+  summary: { passed: number; failed: number; total: number; pass_rate: number | null };
 }
 
 export interface AggStats {

@@ -90,7 +90,7 @@ export interface EvaluateSkillsResult {
     slug: string;
     relPath: string;
     evals: number;
-    passRate: number;
+    passRate: number | null;
     benchmarkPath: string;
     errored: number;
   }[];
@@ -109,7 +109,7 @@ interface PreparedSkill {
   skill: Skill;
   slug: string;
   skillDir: string;
-  aggregateRuns: { mode: RunMode; passRate: number; durationMs: number; tokens: number }[];
+  aggregateRuns: { mode: RunMode; passRate: number | null; durationMs: number; tokens: number }[];
   passed: number;
   failed: number;
   errored: number;
@@ -375,7 +375,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       slug: p.slug,
       relPath: p.ref.relPath,
       evals: p.skill.evals.length,
-      passRate: total === 0 ? 1 : p.passed / total,
+      passRate: total === 0 ? null : p.passed / total,
       benchmarkPath: path.join(p.skillDir, "benchmark.json"),
       errored: p.errored,
     });

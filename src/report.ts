@@ -104,12 +104,12 @@ interface ReportSkill {
     passed: number;
     failed: number;
     total: number;
-    passRate: number;
+    passRate: number | null;
     avgDurationMs: number;
     avgTokens: number;
     withoutPassed: number;
     withoutTotal: number;
-    withoutPassRate: number;
+    withoutPassRate: number | null;
     regressions: number;
     errored: number;
   };
@@ -203,7 +203,9 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
       !isErrorRun(withRun) &&
       withoutRun &&
       !isErrorRun(withoutRun) &&
-      withoutRun.grading.summary.pass_rate >= withRun.grading.summary.pass_rate
+      withRun.grading.summary.total > 0 &&
+      withoutRun.grading.summary.total > 0 &&
+      withoutRun.grading.summary.pass_rate! >= withRun.grading.summary.pass_rate!
     ) {
       regressions += 1;
     }
@@ -223,12 +225,12 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
       passed,
       failed,
       total,
-      passRate: total === 0 ? 1 : passed / total,
+      passRate: total === 0 ? null : passed / total,
       avgDurationMs: withSkillRuns === 0 ? 0 : totalDuration / withSkillRuns,
       avgTokens: withSkillRuns === 0 ? 0 : totalTokens / withSkillRuns,
       withoutPassed,
       withoutTotal,
-      withoutPassRate: withoutTotal === 0 ? 1 : withoutPassed / withoutTotal,
+      withoutPassRate: withoutTotal === 0 ? null : withoutPassed / withoutTotal,
       regressions,
       errored,
     },
@@ -251,7 +253,14 @@ function collectReport(workspace: string): ReportSkill[] {
     const skill = collectSkill(dir);
     if (skill) out.push(skill);
   }
-  return out.sort((a, b) => a.totals.passRate - b.totals.passRate); // failures first
+  return out.sort((a, b) => {
+    const ra = a.totals.passRate;
+    const rb = b.totals.passRate;
+    if (ra === null && rb === null) return 0;
+    if (ra === null) return 1; // ungraded skills sort last
+    if (rb === null) return -1;
+    return ra - rb; // failures first
+  });
 }
 
 // ─── HTML rendering ──────────────────────────────────────────────────────────
@@ -266,6 +275,10 @@ function escapeHtml(value: string): string {
 
 function pct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function pctOrNA(value: number | null): string {
+  return value === null ? "n/a" : pct(value);
 }
 
 function ms(value: number): string {
@@ -291,20 +304,23 @@ function humanizeEvalName(slug: string): string {
     .join(" ");
 }
 
-function rateClass(passRate: number): string {
+function rateClass(passRate: number | null): string {
+  if (passRate === null) return "muted";
   if (passRate >= 0.8) return "ok";
   if (passRate >= 0.5) return "warn";
   return "bad";
 }
 
-function renderBar(passRate: number): string {
+function renderBar(passRate: number | null): string {
   const cls = rateClass(passRate);
-  const width = Math.round(passRate * 100);
+  const width = passRate === null ? 0 : Math.round(passRate * 100);
   return `<div class="bar ${cls}"><div class="fill" style="width:${width}%"></div></div>`;
 }
 
 function renderDeltaCell(t: ReportSkill["totals"]): string {
-  if (t.withoutTotal === 0) return `<td class="num delta-cell muted">—</td>`;
+  if (t.withoutTotal === 0 || t.passRate === null || t.withoutPassRate === null) {
+    return `<td class="num delta-cell muted">—</td>`;
+  }
   const deltaPp = (t.passRate - t.withoutPassRate) * 100;
   const cls = deltaPp > 0 ? "ok" : deltaPp < 0 ? "bad" : "muted";
   const sign = deltaPp >= 0 ? "+" : "";
@@ -320,7 +336,7 @@ function renderSkillRow(skill: ReportSkill): string {
           <div class="muted">${escapeHtml(skill.meta.relPath)}</div></td>
       <td class="num">${skill.evals.length}</td>
       <td class="num">${t.passed}/${t.total}</td>
-      <td class="num">${pct(t.passRate)}</td>
+      <td class="num">${pctOrNA(t.passRate)}</td>
       <td class="bar-cell">${renderBar(t.passRate)}</td>
       ${renderDeltaCell(t)}
       <td class="num">${ms(t.avgDurationMs)}</td>
@@ -460,7 +476,9 @@ function renderEval(ev: ReportEval, skillName: string, skillSlug: string): strin
     !isErrorRun(withSkillRun) &&
     withoutSkillRun !== undefined &&
     !isErrorRun(withoutSkillRun) &&
-    withoutSkillRun.grading.summary.pass_rate >= withSkillRun.grading.summary.pass_rate;
+    withSkillRun.grading.summary.total > 0 &&
+    withoutSkillRun.grading.summary.total > 0 &&
+    withoutSkillRun.grading.summary.pass_rate! >= withSkillRun.grading.summary.pass_rate!;
 
   const withSkillLabel =
     withSkillRun && !isErrorRun(withSkillRun)
@@ -512,7 +530,7 @@ function renderSkillSection(skill: ReportSkill): string {
   return `
     <article class="skill" id="skill-${escapeHtml(skill.meta.slug)}">
       <header>
-        <h2>${escapeHtml(skill.meta.name)} <span class="badge ${rateClass(t.passRate)}">${pct(t.passRate)}</span></h2>
+        <h2>${escapeHtml(skill.meta.name)} <span class="badge ${rateClass(t.passRate)}">${t.passRate === null ? "no assertions" : pct(t.passRate)}</span></h2>
         <div class="muted">${escapeHtml(skill.meta.relPath)}</div>
         <div class="muted">${t.passed}/${t.total} assertions · ${skill.evals.length} evals · ${ms(t.avgDurationMs)} avg · ${Math.round(t.avgTokens)} tokens avg</div>
         ${benchmarkBlock}
@@ -644,13 +662,13 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
   const totalAssertions = skills.reduce((sum, s) => sum + s.totals.total, 0);
   const totalPassed = skills.reduce((sum, s) => sum + s.totals.passed, 0);
   const totalFailed = totalAssertions - totalPassed;
-  const overallRate = totalAssertions === 0 ? 1 : totalPassed / totalAssertions;
+  const overallRate = totalAssertions === 0 ? null : totalPassed / totalAssertions;
   const totalWithoutPassed = skills.reduce((sum, s) => sum + s.totals.withoutPassed, 0);
   const totalWithoutTotal = skills.reduce((sum, s) => sum + s.totals.withoutTotal, 0);
   const totalRegressions = skills.reduce((sum, s) => sum + s.totals.regressions, 0);
   const totalErrored = skills.reduce((sum, s) => sum + s.totals.errored, 0);
   const hasBaseline = totalWithoutTotal > 0;
-  const overallWithoutRate = totalWithoutTotal === 0 ? 1 : totalWithoutPassed / totalWithoutTotal;
+  const overallWithoutRate = totalWithoutTotal === 0 ? null : totalWithoutPassed / totalWithoutTotal;
   const generatedAt = new Date();
 
   const title = args.title ?? "Agent Skills Eval report";
@@ -703,7 +721,7 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
       <div class="stat"><span class="label">evals</span><span class="value">${totalEvals}</span></div>
       <div class="stat ok"><span class="label">passed</span><span class="value">${totalPassed}</span></div>
       <div class="stat ${totalFailed > 0 ? "bad" : ""}"><span class="label">failed</span><span class="value">${totalFailed}</span></div>
-      <div class="stat ${rateClass(overallRate)}"><span class="label">pass rate</span><span class="value">${pct(overallRate)}</span></div>
+      <div class="stat ${rateClass(overallRate)}"><span class="label">pass rate</span><span class="value">${pctOrNA(overallRate)}</span></div>
       ${
         totalErrored > 0
           ? `<div class="stat warn"><span class="label">errored</span><span class="value">${totalErrored}</span></div>`
@@ -717,7 +735,7 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
     </div>
     ${
       hasBaseline
-        ? `<div class="totals-caption muted">with_skill numbers above · without skill: ${totalWithoutPassed}/${totalWithoutTotal} passed · ${pct(overallWithoutRate)} pass rate</div>`
+        ? `<div class="totals-caption muted">with_skill numbers above · without skill: ${totalWithoutPassed}/${totalWithoutTotal} passed · ${pctOrNA(overallWithoutRate)} pass rate</div>`
         : ""
     }
     ${

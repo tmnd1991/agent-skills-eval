@@ -1,6 +1,6 @@
 {
   "name": "agent-skills-eval",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "TypeScript SDK and CLI for evaluating agentskills.io-style AI agent skills with LLM judges, baseline comparison, YAML config, JSONL logs, and HTML reports.",
   "type": "module",
   "author": {
