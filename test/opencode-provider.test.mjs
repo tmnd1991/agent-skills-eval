@@ -132,6 +132,30 @@ test("OpencodeProvider.complete: gives up after maxContinuations instead of loop
   }
 });
 
+test("OpencodeProvider.complete: a premature 'waiting on delegation' stub reply is not accepted as final — the harness keeps going until the model reads its result back", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url, { timeoutMs: 10_000, maxContinuations: 3 });
+    const result = await p.complete("__FAKE_OPENCODE_DELEGATE_STUB__");
+    assert.equal(result.error, undefined);
+    assert.equal(result.output, "FAKE_OPENCODE_REAL_ANSWER_AFTER_READ");
+    assert.ok(result.toolCalls?.some((c) => c.function.name === "delegation_read"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: gives up with a distinct diagnostic when the model never reads back its own dispatched delegation", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    const p = provider(server.url, { timeoutMs: 10_000, maxContinuations: 2 });
+    const result = await p.complete("__FAKE_OPENCODE_DELEGATE_STUB_FOREVER__");
+    assert.match(result.error, /gave up after 2 follow-up prompt\(s\) waiting for the model to read back a dispatched delegation's result/);
+  } finally {
+    await server.close();
+  }
+});
+
 test("OpencodeProvider.complete: recovers text from an earlier step-message even when the turn's final message is tool-only", async () => {
   const server = await createFakeOpencodeServer();
   try {

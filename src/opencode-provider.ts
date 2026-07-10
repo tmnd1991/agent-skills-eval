@@ -226,6 +226,34 @@ function collectOutcome(messages: Array<{ info: Message; parts: Part[] }>): RunO
   return { text, toolCalls, inputTokens, outputTokens, costUsd, errorMessage };
 }
 
+/** Tool names opencode exposes for dispatching a delegated subagent. */
+const DELEGATION_DISPATCH_TOOLS = new Set(["delegate", "task"]);
+/** Tool name opencode exposes for reading back a dispatched delegation's result. */
+const DELEGATION_READ_TOOLS = new Set(["delegation_read"]);
+/**
+ * Below this length, a reply that hasn't read back every dispatched
+ * delegation is treated as a premature "waiting on delegation" stub rather
+ * than a real (if short) answer — see `isStalledOnDelegation`.
+ */
+const STUB_TEXT_THRESHOLD = 300;
+
+/**
+ * True when the model has dispatched more delegations (`delegate`/`task`)
+ * than it has read back (`delegation_read`) and its reply so far is too
+ * short to plausibly be a real synthesis of that work. Catches the case
+ * where the model narrates something like "Waiting for delegation
+ * result..." and ends its turn instead of polling `delegation_read` or
+ * letting the harness's own continuation loop pick the result up — that
+ * text is the model's own reply (not opencode's unanswered-notification
+ * message), so without this check it looks structurally identical to a
+ * real final answer and gets accepted as one.
+ */
+function isStalledOnDelegation(outcome: RunOutcome): boolean {
+  const dispatched = outcome.toolCalls.filter((call) => DELEGATION_DISPATCH_TOOLS.has(call.function.name)).length;
+  const read = outcome.toolCalls.filter((call) => DELEGATION_READ_TOOLS.has(call.function.name)).length;
+  return dispatched > read && outcome.text.trim().length < STUB_TEXT_THRESHOLD;
+}
+
 /**
  * Wraps opencode's HTTP server (via `@opencode-ai/sdk`'s client, talking to
  * our own directly-spawned `opencode serve` process) as a `Provider`. Each
@@ -240,10 +268,12 @@ function collectOutcome(messages: Array<{ info: Message; parts: Part[] }>): RunO
  * wait for that, so this provider keeps the server alive after the initial
  * prompt resolves and polls `session.status`/`session.children` until every
  * delegated child session goes idle, then — if the session's last message is
- * still an unanswered notification rather than the model's own reply — sends
- * a bounded number of follow-up prompts (`maxContinuations`) so the model can
- * actually synthesize using the delegate's result. All of this is bounded by
- * `timeoutMs` as the overall deadline.
+ * still an unanswered notification rather than the model's own reply, or the
+ * model's own reply is a premature "waiting on delegation" stub that never
+ * read back a dispatched delegation's result (see `isStalledOnDelegation`) —
+ * sends a bounded number of follow-up prompts (`maxContinuations`) so the
+ * model can actually synthesize using the delegate's result. All of this is
+ * bounded by `timeoutMs` as the overall deadline.
  *
  * Implements `prepareSkill`/`cleanupSkill`: rather than injecting the skill
  * into the prompt, it symlinks every entry of the skill's directory (except
@@ -444,21 +474,28 @@ export class OpencodeProvider implements Provider {
       }
       const messages = messagesResult.data;
       const lastMessage = messages[messages.length - 1];
+      const outcome = collectOutcome(messages);
+      const stalled = lastMessage?.info.role !== "user" && isStalledOnDelegation(outcome);
 
-      // The model's own reply (not a still-unanswered notification) is the real end of the turn.
-      if (lastMessage?.info.role !== "user") {
-        return collectOutcome(messages);
+      // The model's own reply (not a still-unanswered notification, and not
+      // a premature "waiting on delegation" stub) is the real end of the turn.
+      if (lastMessage?.info.role !== "user" && !stalled) {
+        return outcome;
       }
 
       if (continuations >= this.maxContinuations || Date.now() >= deadline) {
         return {
-          ...collectOutcome(messages),
-          errorMessage: `opencode run: gave up after ${continuations} follow-up prompt(s) waiting for the model to use a delegated subagent's result`,
+          ...outcome,
+          errorMessage: stalled
+            ? `opencode run: gave up after ${continuations} follow-up prompt(s) waiting for the model to read back a dispatched delegation's result`
+            : `opencode run: gave up after ${continuations} follow-up prompt(s) waiting for the model to use a delegated subagent's result`,
         };
       }
 
       continuations++;
-      const cont = await sendPrompt("Continue.");
+      const cont = await sendPrompt(
+        "Continue. If you dispatched a delegation, call delegation_read on its id now and report the findings — do not say you are waiting."
+      );
       if (cont.error) {
         return { text: "", toolCalls: [], inputTokens: 0, outputTokens: 0, costUsd: 0, errorMessage: describeError(cont.error) };
       }

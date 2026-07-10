@@ -143,6 +143,12 @@ export function createFakeOpencodeServer() {
 
   function handlePrompt(session, text, res) {
     requests.push({ sessionId: session.id, text });
+    // Real opencode records every prompt the client sends (the initial eval
+    // prompt and any "Continue." follow-up) as a role="user" message in
+    // session history — collectOutcome's turn-boundary logic depends on
+    // that to find where the *last* answered turn starts. taskNotification
+    // has the same shape and is reused here for both purposes.
+    session.messages.push(taskNotification(session.id, text));
 
     if (session.step === 0) {
       if (text.includes("__FAKE_OPENCODE_ERROR__")) {
@@ -153,6 +159,10 @@ export function createFakeOpencodeServer() {
         session.scenario = "delegate-race";
       } else if (text.includes("__FAKE_OPENCODE_INFINITE_DELEGATE__")) {
         session.scenario = "infinite-delegate";
+      } else if (text.includes("__FAKE_OPENCODE_DELEGATE_STUB_FOREVER__")) {
+        session.scenario = "delegate-stub-forever";
+      } else if (text.includes("__FAKE_OPENCODE_DELEGATE_STUB__")) {
+        session.scenario = "delegate-stub";
       } else if (text.startsWith("__FAKE_OPENCODE_ECHO__")) {
         session.scenario = "echo";
       } else if (text.includes("__FAKE_OPENCODE_TOOL_ONLY_FINAL__")) {
@@ -251,6 +261,37 @@ export function createFakeOpencodeServer() {
         session.messages.push(message);
         triggerDelegation(session);
         respondJson(res, 200, message);
+        return;
+      }
+      case "delegate-stub": {
+        // Reproduces the real-world failure: the model calls `delegate` but
+        // never reads its result back, instead ending its own turn with a
+        // "waiting" stub — which looks structurally like a normal final
+        // reply (role "assistant") even though nothing was ever read back.
+        if (session.step === 1) {
+          const toolMessage = toolOnlyAssistantMessage(session.id, "delegate", { prompt: "explore", agent: "explore" });
+          session.messages.push(toolMessage);
+          const stubMessage = assistantMessage(session.id, "Waiting for delegation result...");
+          session.messages.push(stubMessage);
+          respondJson(res, 200, stubMessage);
+        } else {
+          const readMessage = toolOnlyAssistantMessage(session.id, "delegation_read", { id: "fake-delegation-id" });
+          session.messages.push(readMessage);
+          const finalMessage = assistantMessage(session.id, "FAKE_OPENCODE_REAL_ANSWER_AFTER_READ");
+          session.messages.push(finalMessage);
+          respondJson(res, 200, finalMessage);
+        }
+        return;
+      }
+      case "delegate-stub-forever": {
+        // Like "delegate-stub", but never reads its own delegation back on
+        // any continuation — should exhaust maxContinuations and give up
+        // with a diagnostic distinct from the "unanswered notification" case.
+        const toolMessage = toolOnlyAssistantMessage(session.id, "delegate", { prompt: "explore", agent: "explore" });
+        session.messages.push(toolMessage);
+        const stubMessage = assistantMessage(session.id, `Waiting for delegation result... (round ${session.step})`);
+        session.messages.push(stubMessage);
+        respondJson(res, 200, stubMessage);
         return;
       }
       default: {
