@@ -6,6 +6,7 @@ import { evaluateSkills } from "./evaluate-skills.js";
 import { jsonlReporter, type JsonlReporter } from "./jsonl-reporter.js";
 import { OpenAICompatibleProvider } from "./openai-compatible-provider.js";
 import { OpencodeProvider } from "./opencode-provider.js";
+import { ClaudeCodeProvider } from "./claude-code-provider.js";
 import type { Provider } from "./provider.js";
 
 interface CliOptions {
@@ -16,12 +17,20 @@ interface CliOptions {
   judge?: string;
   baseUrl?: string;
   apiKeyEnv?: string;
-  runMode?: "api" | "opencode";
+  runMode?: "api" | "opencode" | "claude-code";
   opencodeAgent?: string;
   opencodeAuto?: boolean;
   opencodeDir?: string;
   opencodeTimeout?: string;
   opencodeJudgeTimeout?: string;
+  claudeCodeAgent?: string;
+  claudeCodeAuto?: boolean;
+  claudeCodeDir?: string;
+  claudeCodeTimeout?: string;
+  claudeCodeJudgeTimeout?: string;
+  claudeCodeBinary?: string;
+  claudeCodeAllowedTools?: string[];
+  claudeCodeDisallowedTools?: string[];
   include?: string[];
   exclude?: string[];
   concurrency?: string;
@@ -77,7 +86,7 @@ async function main(): Promise<void> {
     .option("--judge <model>", "Judge model name; defaults to --target")
     .option("--base-url <url>", "OpenAI-compatible API base URL")
     .option("--api-key-env <name>", "Environment variable containing the API key")
-    .option("--run-mode <mode>", "Execution mode: api (default) or opencode")
+    .option("--run-mode <mode>", "Execution mode: api (default), opencode, or claude-code")
     .option("--opencode-agent <name>", "opencode --agent to use")
     .option("--opencode-auto", "Auto-approve opencode permissions (dangerous)")
     .option("--no-opencode-auto", "Disable opencode auto-approve, overriding config file")
@@ -87,6 +96,18 @@ async function main(): Promise<void> {
       "--opencode-judge-timeout <ms>",
       "opencode judge/grader subprocess timeout in milliseconds; defaults to --opencode-timeout"
     )
+    .option("--claude-code-agent <name>", "claude --agent to use")
+    .option("--claude-code-auto", "Auto-approve claude-code permissions via --dangerously-skip-permissions (dangerous)")
+    .option("--no-claude-code-auto", "Disable claude-code auto-approve, overriding config file")
+    .option("--claude-code-dir <path>", "Working directory for claude-code runs")
+    .option("--claude-code-timeout <ms>", "claude-code subprocess timeout in milliseconds")
+    .option(
+      "--claude-code-judge-timeout <ms>",
+      "claude-code judge/grader subprocess timeout in milliseconds; defaults to --claude-code-timeout"
+    )
+    .option("--claude-code-binary <path>", 'Path to the claude executable (default: "claude" resolved via PATH)')
+    .option("--claude-code-allowed-tools <tool>", "Tool name to allow (repeatable), forwarded to claude --allowedTools", list, [])
+    .option("--claude-code-disallowed-tools <tool>", "Tool name to deny (repeatable), forwarded to claude --disallowedTools", list, [])
     .option("--include <glob>", "Include skill relPath glob", list, [])
     .option("--exclude <glob>", "Exclude skill relPath glob", list, [])
     .option("--concurrency <number>", "Eval cases to run in parallel")
@@ -138,9 +159,29 @@ async function main(): Promise<void> {
     opts.opencodeJudgeTimeout !== undefined
       ? Number.parseInt(opts.opencodeJudgeTimeout, 10)
       : config.opencode?.judgeTimeoutMs ?? opencodeTimeoutMs;
+  const claudeCodeAgent = opts.claudeCodeAgent ?? config.claudeCode?.agent;
+  const claudeCodeAuto = opts.claudeCodeAuto ?? config.claudeCode?.auto ?? false;
+  const claudeCodeDir = opts.claudeCodeDir ?? config.claudeCode?.dir ?? process.cwd();
+  const claudeCodeBinary = opts.claudeCodeBinary ?? config.claudeCode?.claudeBinary;
+  const claudeCodeAllowedTools =
+    opts.claudeCodeAllowedTools && opts.claudeCodeAllowedTools.length > 0
+      ? opts.claudeCodeAllowedTools
+      : config.claudeCode?.allowedTools;
+  const claudeCodeDisallowedTools =
+    opts.claudeCodeDisallowedTools && opts.claudeCodeDisallowedTools.length > 0
+      ? opts.claudeCodeDisallowedTools
+      : config.claudeCode?.disallowedTools;
+  const claudeCodeTimeoutMs =
+    opts.claudeCodeTimeout !== undefined
+      ? Number.parseInt(opts.claudeCodeTimeout, 10)
+      : config.claudeCode?.timeoutMs ?? 5 * 60 * 1000;
+  const claudeCodeJudgeTimeoutMs =
+    opts.claudeCodeJudgeTimeout !== undefined
+      ? Number.parseInt(opts.claudeCodeJudgeTimeout, 10)
+      : config.claudeCode?.judgeTimeoutMs ?? claudeCodeTimeoutMs;
 
-  if (runMode !== "api" && runMode !== "opencode") {
-    throw new Error('--run-mode must be "api" or "opencode"');
+  if (runMode !== "api" && runMode !== "opencode" && runMode !== "claude-code") {
+    throw new Error('--run-mode must be "api", "opencode", or "claude-code"');
   }
   if (runMode === "api") {
     if (!baseUrl) {
@@ -154,6 +195,9 @@ async function main(): Promise<void> {
     throw new Error(
       '--target is required when --run-mode is "opencode" (use "provider/model", e.g. "anthropic/claude-sonnet-5")'
     );
+  }
+  if (runMode === "claude-code" && !opts.target && !config.target) {
+    throw new Error('--target is required when --run-mode is "claude-code" (e.g. "claude-sonnet-5")');
   }
   if (layout !== "iteration" && layout !== "flat") {
     throw new Error('--layout must be "iteration" or "flat"');
@@ -169,6 +213,12 @@ async function main(): Promise<void> {
   }
   if (runMode === "opencode" && (!Number.isInteger(opencodeJudgeTimeoutMs) || opencodeJudgeTimeoutMs < 1)) {
     throw new Error("--opencode-judge-timeout must be a positive integer (milliseconds)");
+  }
+  if (runMode === "claude-code" && (!Number.isInteger(claudeCodeTimeoutMs) || claudeCodeTimeoutMs < 1)) {
+    throw new Error("--claude-code-timeout must be a positive integer (milliseconds)");
+  }
+  if (runMode === "claude-code" && (!Number.isInteger(claudeCodeJudgeTimeoutMs) || claudeCodeJudgeTimeoutMs < 1)) {
+    throw new Error("--claude-code-judge-timeout must be a positive integer (milliseconds)");
   }
 
   let target: Provider;
@@ -191,6 +241,29 @@ async function main(): Promise<void> {
       auto: opencodeAuto,
       timeoutMs: opencodeJudgeTimeoutMs,
       baseUrl: opencodeBaseUrl,
+    });
+  } else if (runMode === "claude-code") {
+    target = new ClaudeCodeProvider({
+      providerName: "claude-code",
+      model: targetModel,
+      agent: claudeCodeAgent,
+      dir: claudeCodeDir,
+      auto: claudeCodeAuto,
+      timeoutMs: claudeCodeTimeoutMs,
+      claudeBinary: claudeCodeBinary,
+      allowedTools: claudeCodeAllowedTools,
+      disallowedTools: claudeCodeDisallowedTools,
+    });
+    judge = new ClaudeCodeProvider({
+      providerName: "claude-code",
+      model: judgeModel,
+      agent: claudeCodeAgent,
+      dir: claudeCodeDir,
+      auto: claudeCodeAuto,
+      timeoutMs: claudeCodeJudgeTimeoutMs,
+      claudeBinary: claudeCodeBinary,
+      allowedTools: claudeCodeAllowedTools,
+      disallowedTools: claudeCodeDisallowedTools,
     });
   } else {
     const creds = requireApiCredentials(baseUrl, apiKey, apiKeyEnv);

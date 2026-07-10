@@ -4,7 +4,7 @@ import { load } from "js-yaml";
 
 export type LogFormat = "pretty" | "jsonl" | "silent";
 export type WorkspaceLayout = "flat" | "iteration";
-export type ProviderRunMode = "api" | "opencode";
+export type ProviderRunMode = "api" | "opencode" | "claude-code";
 
 export interface OpencodeConfig {
   agent?: string;
@@ -17,6 +17,19 @@ export interface OpencodeConfig {
   baseUrl?: string;
 }
 
+export interface ClaudeCodeConfig {
+  agent?: string;
+  auto?: boolean;
+  dir?: string;
+  timeoutMs?: number;
+  /** Timeout for judge/grader calls. Defaults to `timeoutMs`. Judge sessions read a full transcript plus output files and are often slower than the executor run they grade. */
+  judgeTimeoutMs?: number;
+  /** Path to the `claude` executable. Default "claude" (resolved via PATH). */
+  claudeBinary?: string;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+}
+
 export interface AgentSkillsEvalConfig {
   root?: string;
   workspace?: string;
@@ -27,6 +40,7 @@ export interface AgentSkillsEvalConfig {
   apiKeyEnv?: string;
   runMode?: ProviderRunMode;
   opencode?: OpencodeConfig;
+  claudeCode?: ClaudeCodeConfig;
   include?: string[];
   exclude?: string[];
   concurrency?: number;
@@ -101,8 +115,8 @@ function parseLogFormat(value: unknown): LogFormat | undefined {
 
 function parseRunMode(value: unknown): ProviderRunMode | undefined {
   if (value === undefined || value === null) return undefined;
-  if (value === "api" || value === "opencode") return value;
-  throw new Error('runMode must be "api" or "opencode"');
+  if (value === "api" || value === "opencode" || value === "claude-code") return value;
+  throw new Error('runMode must be "api", "opencode", or "claude-code"');
 }
 
 function parseOpencode(value: unknown): OpencodeConfig | undefined {
@@ -115,6 +129,21 @@ function parseOpencode(value: unknown): OpencodeConfig | undefined {
     timeoutMs: asNumber(record.timeoutMs, "opencode.timeoutMs"),
     judgeTimeoutMs: asNumber(record.judgeTimeoutMs, "opencode.judgeTimeoutMs"),
     baseUrl: asString(record.baseUrl, "opencode.baseUrl"),
+  };
+}
+
+function parseClaudeCode(value: unknown): ClaudeCodeConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  const record = asRecord(value, "claudeCode");
+  return {
+    agent: asString(record.agent, "claudeCode.agent"),
+    auto: asBoolean(record.auto, "claudeCode.auto"),
+    dir: asString(record.dir, "claudeCode.dir"),
+    timeoutMs: asNumber(record.timeoutMs, "claudeCode.timeoutMs"),
+    judgeTimeoutMs: asNumber(record.judgeTimeoutMs, "claudeCode.judgeTimeoutMs"),
+    claudeBinary: asString(record.claudeBinary, "claudeCode.claudeBinary"),
+    allowedTools: asStringArray(record.allowedTools, "claudeCode.allowedTools"),
+    disallowedTools: asStringArray(record.disallowedTools, "claudeCode.disallowedTools"),
   };
 }
 
@@ -157,6 +186,7 @@ export function normalizeConfig(raw: unknown): AgentSkillsEvalConfig {
     apiKeyEnv: asString(record.apiKeyEnv, "apiKeyEnv"),
     runMode: parseRunMode(record.runMode),
     opencode: parseOpencode(record.opencode),
+    claudeCode: parseClaudeCode(record.claudeCode),
     include: asStringArray(record.include, "include"),
     exclude: asStringArray(record.exclude, "exclude"),
     concurrency: asNumber(record.concurrency, "concurrency"),

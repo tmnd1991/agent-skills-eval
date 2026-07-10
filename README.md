@@ -65,7 +65,7 @@ Open `iteration-1/report/index.html` and you have a real, evidence-backed answer
 | **Judge-graded outputs** | Use any chat model as a judge. Pass/fail with cited assertions, not vibes. |
 | **TypeScript SDK + CLI** | One-liner CLI for CI, full SDK for custom pipelines, custom providers, and dashboards. |
 | **OpenAI-compatible by default** | Works out of the box with OpenAI, Together, Groq, Anthropic via OpenAI-compat layers, local Llama servers — anything that speaks the OpenAI chat API. |
-| **Pluggable execution: API or agentic CLI** | Run target/judge through any OpenAI-compatible API, or drive the real [`opencode`](https://opencode.ai) CLI (its own tool use, permissions, agent config) via `--run-mode opencode`. |
+| **Pluggable execution: API or agentic CLI** | Run target/judge through any OpenAI-compatible API, or drive the real [`opencode`](https://opencode.ai) CLI via `--run-mode opencode`, or the [`claude`](https://docs.claude.com/en/docs/claude-code) CLI's batch mode via `--run-mode claude-code` — either way you get the CLI's own tool use, permissions, and agent config. |
 | **Tool-call assertions** | Deterministic checks for agents that call tools, not just generate text. |
 | **Portable artifacts** | JSON + JSONL all the way down. Run today, diff tomorrow. Plug into your own dashboard. |
 | **Static HTML reports** | A drop-in report site you can publish anywhere — no infrastructure. |
@@ -118,7 +118,7 @@ The mental model is straightforward. For every eval defined in your skill:
 
 The judge sees the eval's `expected_output` and `assertions` and grades each side independently. The `--baseline` flag is what enables the comparison; without it you only get the `with_skill` run.
 
-This is the *logical* flow regardless of run mode — `--run-mode opencode` (below) changes *how* the target/judge models are invoked (a subprocess instead of an HTTP call), not this flow.
+This is the *logical* flow regardless of run mode — `--run-mode opencode`/`--run-mode claude-code` (below) change *how* the target/judge models are invoked (a subprocess instead of an HTTP call), not this flow.
 
 ## YAML config
 
@@ -284,6 +284,57 @@ opencode:
 - **`tool_assertions` see opencode's own internal tools, not a caller-supplied schema.** This provider reports every tool call opencode's agent actually made during the run (`bash`, file edits, `task` delegation, `skill`, etc.) as `ProviderResult.toolCalls`, written to `tool_calls.json` and shown in the HTML report — including, for `with_skill` runs, whether the `skill` tool was called with this eval's skill name (surfaced as a "skill picked up" badge). `tool_assertions` grade against that same list, so e.g. `{"type": "tool-called", "name": "skill"}` works under `--run-mode opencode`, but there's no `tools`/`tool_choice` schema to pass *in* — the model always has whatever tools opencode itself exposes, never a caller-defined set.
 - **Shared working directory.** All calls from one CLI invocation share a single `--opencode-dir`. If a skill has the model write files, or you run `with_skill`/`without_skill` for the same skill concurrently, use `--concurrency 1` — otherwise the on-disk skill symlink one call installs/removes can race another call's `.opencode/skills/<name>/` lookup, or concurrent git operations against the same working tree.
 
+## claude-code run mode
+
+Instead of calling an OpenAI-compatible API directly, you can route target/judge calls through the [`claude`](https://docs.claude.com/en/docs/claude-code) CLI's non-interactive batch mode (`claude -p`) — useful if you already manage model access/credentials through a Claude Code login or subscription and don't want to supply a separate `--base-url`/API key to this tool.
+
+```bash
+npx agent-skills-eval ./skills \
+  --run-mode claude-code \
+  --target claude-sonnet-5 \
+  --claude-code-agent build \
+  --claude-code-timeout 300000
+```
+
+| Flag | Description |
+|---|---|
+| `--run-mode <api\|opencode\|claude-code>` | Default `api`. Set to `claude-code` to spawn the `claude` CLI in batch mode instead of calling an HTTP API. |
+| `--target` / `--judge` | In claude-code mode, any model id or alias `claude --model` accepts (e.g. `claude-sonnet-5`, `sonnet`, `opus`). |
+| `--claude-code-agent <name>` | Forwarded as `claude --agent`. |
+| `--claude-code-dir <path>` | Working directory the `claude` process runs in (cwd) and where skills are installed. Default: current directory. |
+| `--claude-code-auto` / `--no-claude-code-auto` | Pass `--dangerously-skip-permissions`, bypassing every permission prompt unattended. **Dangerous, off by default** — see caveat below. `--no-claude-code-auto` always overrides `claudeCode.auto: true` set in a config file. |
+| `--claude-code-timeout <ms>` | Hard deadline per call. The subprocess is SIGTERM'd (then SIGKILL'd if it doesn't exit) once this elapses. Default `300000` (5 minutes). |
+| `--claude-code-judge-timeout <ms>` | Hard deadline for judge/grader calls specifically. Defaults to `--claude-code-timeout`. A judge that reads a full transcript plus output files is often slower than the run it grades — set this higher if judge calls are timing out. |
+| `--claude-code-binary <path>` | Path to the `claude` executable. Default `"claude"` (resolved via `PATH`). |
+| `--claude-code-allowed-tools <tool>` / `--claude-code-disallowed-tools <tool>` | Repeatable. Forwarded to `claude --allowedTools`/`--disallowedTools`. |
+
+Equivalent YAML:
+
+```yaml
+runMode: claude-code
+claudeCode:
+  agent: build
+  auto: false
+  dir: ./workspace-scratch
+  timeoutMs: 300000
+  judgeTimeoutMs: 600000
+  # claudeBinary: /opt/homebrew/bin/claude
+  # allowedTools: [Bash, Read]
+  # disallowedTools: [WebFetch]
+```
+
+**Skills are loaded natively, not injected into the prompt.** In every other run mode, `with_skill` works by wrapping the skill in an XML block and prepending it to the prompt. In claude-code mode, that would never happen in real-world use — Claude Code discovers project skills on disk and loads them itself. So instead, before each call this provider symlinks every entry of the skill's directory into `<claudeCode.dir>/.claude/skills/<name>/` for `with_skill` runs, and removes that symlink tree for `without_skill` runs — the agent decides for itself whether to invoke the skill. The skill's `evals/` folder (which holds the answer key) is never linked. No `system` message is sent in this mode; the model gets the bare eval prompt either way.
+
+**How a call works.** Each `complete()` call spawns a fresh `claude -p --output-format stream-json --verbose` subprocess with the prompt piped over stdin (not a shell argument, so there's no shell-injection surface and no `ARG_MAX` risk from long skill content), and waits for it to exit. Unlike opencode's HTTP server, `claude -p` runs the entire agentic turn — including any subagent (`Task` tool) delegation — synchronously within that one process and doesn't return until it's done, so there's no async delegation/polling/continuation machinery to worry about. The buffered NDJSON transcript is parsed once the process closes: `tool_use` blocks from `assistant` events become `ProviderResult.toolCalls`, and the final `result` event supplies the output text, cumulative token usage, cost, and error status for the whole run. A timer enforces `--claude-code-timeout`, escalating from `SIGTERM` to `SIGKILL` if the process doesn't exit promptly.
+
+**Caveats:**
+
+- **Token/cost numbers aren't comparable to API mode.** Claude Code's own system prompt and tool schemas add fixed overhead to every call, so `inputTokens`/`outputTokens`/`costUsd` from claude-code-mode runs are not apples-to-apples with the same model called via `OpenAICompatibleProvider`. `inputTokens` sums `usage.input_tokens`, `usage.cache_creation_input_tokens`, and `usage.cache_read_input_tokens` from the CLI's own accounting; `costUsd` is the CLI's own `total_cost_usd`.
+- **`--claude-code-auto` is dangerous.** It passes `--dangerously-skip-permissions`, letting the target/judge model run every tool completely unattended for the duration of the call. It's off by default. Even without it, a stuck interactive permission prompt has no TTY to answer in a non-interactive eval run — that's what `--claude-code-timeout` guards against; it always applies, whether or not `--claude-code-auto` is set.
+- **Session persistence is disabled.** Every call passes `--no-session-persistence` since each `complete()` is a one-shot, non-resumable run — there's no `--resume`/`--continue` support here, so persisting sessions to disk would just accumulate unbounded, unused transcript files.
+- **`tool_assertions` see whatever tools the CLI actually exposed, not a caller-supplied schema.** This provider reports every `tool_use` block Claude Code's agent actually emitted during the run (`Bash`, file edits, `Task` delegation, `Skill`, etc.) as `ProviderResult.toolCalls`, written to `tool_calls.json` and shown in the HTML report. `tool_assertions` grade against that same list, so e.g. `{"type": "tool-called", "name": "Skill"}` works under `--run-mode claude-code`, but there's no `tools`/`tool_choice` schema to pass *in* — use `--claude-code-allowed-tools`/`--claude-code-disallowed-tools` to constrain the tool set instead.
+- **Shared working directory.** All calls from one CLI invocation share a single `--claude-code-dir`. If a skill has the model write files, or you run `with_skill`/`without_skill` for the same skill concurrently, use `--concurrency 1` — otherwise the on-disk skill symlink one call installs/removes can race another call's `.claude/skills/<name>/` lookup, or concurrent tool calls against the same working tree.
+
 ## Skill layout
 
 A skill is a folder. The minimum is a `SKILL.md`. Add `evals/evals.json` and you can evaluate it.
@@ -367,6 +418,15 @@ npx agent-skills-eval [root] \
   --target anthropic/claude-sonnet-5 \
   --opencode-agent build \
   --opencode-timeout 300000
+```
+
+Or via the [`claude` CLI's batch mode](#claude-code-run-mode):
+
+```bash
+npx agent-skills-eval [root] \
+  --run-mode claude-code \
+  --target claude-sonnet-5 \
+  --claude-code-timeout 300000
 ```
 
 ## Reports

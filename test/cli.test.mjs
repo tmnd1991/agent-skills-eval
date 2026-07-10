@@ -6,7 +6,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createFakeOpencodeServer } from "./fixtures/fake-opencode-server.mjs";
+
+const FAKE_CLAUDE_BINARY = fileURLToPath(new URL("./fixtures/fake-claude-code-binary.mjs", import.meta.url));
 
 const execFileAsync = promisify(execFile);
 
@@ -187,6 +190,47 @@ test("CLI --run-mode opencode skips API credential requirements and runs via the
   }
 });
 
+test("CLI --run-mode claude-code skips API credential requirements and runs via the claude binary", async () => {
+  const root = tempRoot();
+  writeSkill(root);
+  const workspace = path.join(root, "workspace");
+  const configPath = path.join(root, "agent-skills-eval.yaml");
+  const logFile = path.join(root, "events.jsonl");
+
+  writeFileSync(configPath, [
+    `root: ${JSON.stringify(root)}`,
+    `workspace: ${JSON.stringify(workspace)}`,
+    "baseline: true",
+    "target: fake-model",
+    "judge: fake-model",
+    "runMode: claude-code",
+    "claudeCode:",
+    `  claudeBinary: ${JSON.stringify(FAKE_CLAUDE_BINARY)}`,
+    "  timeoutMs: 60000",
+    "  judgeTimeoutMs: 120000",
+    "layout: iteration",
+    "strict: true",
+    "report:",
+    "  enabled: false",
+    "logging:",
+    "  format: jsonl",
+    `  file: ${JSON.stringify(logFile)}`,
+  ].join("\n"));
+
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["dist/cli.js", "--config", configPath],
+    {
+      cwd: path.resolve("."),
+      env: { ...process.env, OPENAI_API_KEY: "", OPENAI_BASE_URL: "" },
+    },
+  );
+
+  const result = JSON.parse(stdout);
+  assert.equal(result.failed, 0);
+  assert.ok(existsSync(path.join(workspace, "iteration-1", "eval-top-month", "with_skill", "grading.json")));
+});
+
 test("CLI --run-mode bogus fails validation with a clear error", async () => {
   const root = tempRoot();
   writeSkill(root);
@@ -198,7 +242,7 @@ test("CLI --run-mode bogus fails validation with a clear error", async () => {
       { cwd: path.resolve(".") },
     ),
     (err) => {
-      assert.match(err.stderr, /--run-mode must be "api" or "opencode"/);
+      assert.match(err.stderr, /--run-mode must be "api", "opencode", or "claude-code"/);
       return true;
     },
   );

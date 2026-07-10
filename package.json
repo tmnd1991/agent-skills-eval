@@ -30,6 +30,10 @@
       "import": "./dist/opencode-provider.js",
       "types": "./dist/opencode-provider.d.ts"
     },
+    "./claude-code": {
+      "import": "./dist/claude-code-provider.js",
+      "types": "./dist/claude-code-provider.d.ts"
+    },
     "./config": {
       "import": "./dist/config.js",
       "types": "./dist/config.d.ts"

@@ -176,7 +176,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       skill.evals.some((e) => e.tool_assertions && e.tool_assertions.length > 0)
     ) {
       process.stderr.write(
-        "warning: tool_assertions are not supported by the current provider and will always grade against an empty tool-call list (e.g. --run-mode opencode) — see README \"opencode run mode\" caveats.\n"
+        "warning: tool_assertions are not supported by the current provider and will always grade against an empty tool-call list (e.g. --run-mode opencode or --run-mode claude-code) — see README \"opencode run mode\"/\"claude-code run mode\" caveats.\n"
       );
       warnedToolAssertions = true;
     }
