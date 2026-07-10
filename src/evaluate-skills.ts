@@ -330,6 +330,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       workspace: runWorkspace.dir,
       target: args.target.model,
       judge: args.judge.model,
+      provider: args.target.provider.name,
       title: args.reportTitle,
       output: args.reportOutput,
     });

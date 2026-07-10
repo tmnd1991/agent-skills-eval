@@ -16,8 +16,10 @@
  *         without_skill/...   (only if --baseline)
  *
  * Emits a single self-contained HTML file at `<workspace>/report/index.html`.
- * No external assets, no JavaScript runtime, no build step. Uses `<details>`
- * for collapsibles so it works in any browser, including offline.
+ * No external assets, no build step. Uses `<details>` for collapsibles so it
+ * works in any browser, including offline; a few lines of inline JS expand
+ * the right `<details>` when a link points at a specific eval (plain closed
+ * `<details>` elements don't auto-open on fragment navigation).
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -35,6 +37,8 @@ export interface GenerateReportArgs {
   target?: string;
   /** Judge model used for the run, surfaced in the header for context. */
   judge?: string;
+  /** Provider (run mode) used for the run, e.g. "claude-code", "opencode", surfaced in the header for context. */
+  provider?: string;
 }
 
 export interface GenerateReportResult {
@@ -220,6 +224,24 @@ function ms(value: number): string {
   return `${(value / 1000).toFixed(2)}s`;
 }
 
+function formatDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function modeLabel(mode: ReportRun["mode"]): string {
+  return mode === "with_skill" ? "With Skill" : "Without Skill";
+}
+
+/** Turns an `eval-<slug>` directory name into a readable label, e.g. "eval-review-branch" -> "Review Branch". */
+function humanizeEvalName(slug: string): string {
+  const stripped = slug.startsWith("eval-") ? slug.slice(5) : slug;
+  return stripped
+    .split("-")
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function rateClass(passRate: number): string {
   if (passRate >= 0.8) return "ok";
   if (passRate >= 0.5) return "warn";
@@ -264,7 +286,7 @@ function renderAssertionsTable(grading: GradingJson): string {
         </tr>`
     )
     .join("\n");
-  return `<table class="assertions"><thead><tr><th>#</th><th></th><th>Assertion</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<div class="table-scroll"><table class="assertions"><thead><tr><th>#</th><th></th><th>Assertion</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function renderToolCallsPanel(calls: ToolCall[] | undefined): string {
@@ -285,10 +307,12 @@ function renderToolCallsPanel(calls: ToolCall[] | undefined): string {
   return `
     <details class="tools">
       <summary>tool calls (${calls.length})</summary>
-      <table class="tool-calls">
-        <thead><tr><th>#</th><th>Tool</th><th>Arguments</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="tool-calls">
+          <thead><tr><th>#</th><th>Tool</th><th>Arguments</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
     </details>
   `;
 }
@@ -318,7 +342,7 @@ function renderRun(run: ReportRun, skillName: string): string {
   return `
     <section class="run">
       <header class="run-head">
-        <span class="mode mode-${run.mode}">${run.mode}</span>
+        <span class="mode mode-${run.mode}">${modeLabel(run.mode)}</span>
         <span class="status ${statusCls}">${status}</span>
         ${invokedBadge}
         <span class="muted">${ms(run.timing.duration_ms)} · ${run.timing.total_tokens} tokens · ${summary.passed}/${summary.total}</span>
@@ -328,8 +352,8 @@ function renderRun(run: ReportRun, skillName: string): string {
           ? `<details class="prompt"><summary>system prompt</summary><pre>${escapeHtml(run.prompts.system)}</pre></details>`
           : ""
       }
-      <details class="prompt" open><summary>user prompt</summary><pre>${escapeHtml(run.prompts?.user ?? "(unknown)")}</pre></details>
-      <details class="output" open><summary>output</summary><pre>${escapeHtml(run.output || "(empty)")}</pre></details>
+      <details class="prompt"><summary>user prompt</summary><pre>${escapeHtml(run.prompts?.user ?? "(unknown)")}</pre></details>
+      <details class="output"><summary>output</summary><pre>${escapeHtml(run.output || "(empty)")}</pre></details>
       ${renderToolCallsPanel(run.toolCalls)}
       ${renderAssertionsTable(run.grading)}
       ${
@@ -341,18 +365,19 @@ function renderRun(run: ReportRun, skillName: string): string {
   `;
 }
 
-function renderEval(ev: ReportEval, skillName: string): string {
+function renderEval(ev: ReportEval, skillName: string, skillSlug: string): string {
   const totalAssertions = ev.modes.reduce((sum, m) => sum + m.grading.summary.total, 0);
   const passedAssertions = ev.modes.reduce((sum, m) => sum + m.grading.summary.passed, 0);
   const withSkillRun = ev.modes.find((m) => m.mode === "with_skill");
   const gradedRun = withSkillRun ?? ev.modes[0];
   const allPassed = gradedRun !== undefined && gradedRun.grading.summary.failed === 0 && gradedRun.grading.summary.total > 0;
   const cls = allPassed ? "ok" : "bad";
+  const anchorId = `${escapeHtml(skillSlug)}--${escapeHtml(ev.slug)}`;
   return `
-    <details class="eval ${cls}">
+    <details class="eval ${cls}" id="${anchorId}">
       <summary>
         <span class="eval-status">${allPassed ? "\u2713" : "\u2717"}</span>
-        <span class="eval-name">${escapeHtml(ev.slug)}</span>
+        <span class="eval-name" title="${escapeHtml(ev.slug)}">${escapeHtml(humanizeEvalName(ev.slug))}</span>
         <span class="muted">${passedAssertions}/${totalAssertions} assertions</span>
       </summary>
       <div class="eval-body">${ev.modes.map((run) => renderRun(run, skillName)).join("\n")}</div>
@@ -379,7 +404,7 @@ function renderSkillSection(skill: ReportSkill): string {
         <div class="muted">${t.passed}/${t.total} assertions · ${skill.evals.length} evals · ${ms(t.avgDurationMs)} avg · ${Math.round(t.avgTokens)} tokens avg</div>
         ${benchmarkBlock}
       </header>
-      <div class="evals">${skill.evals.map((ev) => renderEval(ev, skill.meta.name)).join("\n")}</div>
+      <div class="evals">${skill.evals.map((ev) => renderEval(ev, skill.meta.name, skill.meta.slug)).join("\n")}</div>
     </article>
   `;
 }
@@ -392,7 +417,7 @@ const STYLES = `
     --bg-alt: #f6f8fa;
     --border: #e1e4e8;
     --ok: #1a7f37;
-    --warn: #b08800;
+    --warn: #9a6700;
     --bad: #cf222e;
     --ok-bg: #dafbe1;
     --warn-bg: #fff8c5;
@@ -471,9 +496,10 @@ const STYLES = `
   table.tool-calls { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 13px; }
   table.tool-calls th, table.tool-calls td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
   table.tool-calls th { background: var(--bg-alt); font-size: 11px; text-transform: uppercase; color: var(--muted); }
-  table.tool-calls .tool-name { font-family: var(--mono); color: #b08800; font-weight: 600; }
+  table.tool-calls .tool-name { font-family: var(--mono); color: var(--warn); font-weight: 600; }
   pre.tool-args { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.4; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; }
   .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+  .table-scroll { overflow-x: auto; }
 `;
 
 export function generateReport(args: GenerateReportArgs): GenerateReportResult {
@@ -483,7 +509,7 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
   const totalPassed = skills.reduce((sum, s) => sum + s.totals.passed, 0);
   const totalFailed = totalAssertions - totalPassed;
   const overallRate = totalAssertions === 0 ? 1 : totalPassed / totalAssertions;
-  const generatedAt = new Date().toISOString();
+  const generatedAt = new Date();
 
   const title = args.title ?? "Agent Skills Eval report";
   const summaryRows = skills.map(renderSkillRow).join("\n");
@@ -493,20 +519,22 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
     skills.length === 0
       ? `<div class="empty">No skill artifacts found in <code>${escapeHtml(args.workspace)}</code>.</div>`
       : `
-        <table class="summary">
-          <thead>
-            <tr>
-              <th>Skill</th>
-              <th class="num">Evals</th>
-              <th class="num">Passed</th>
-              <th class="num">Pass rate</th>
-              <th></th>
-              <th class="num">Avg time</th>
-              <th class="num">Avg tokens</th>
-            </tr>
-          </thead>
-          <tbody>${summaryRows}</tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="summary">
+            <thead>
+              <tr>
+                <th>Skill</th>
+                <th class="num">Evals</th>
+                <th class="num">Passed</th>
+                <th class="num">Pass rate</th>
+                <th></th>
+                <th class="num">Avg time</th>
+                <th class="num">Avg tokens</th>
+              </tr>
+            </thead>
+            <tbody>${summaryRows}</tbody>
+          </table>
+        </div>
         ${detailSections}
       `;
 
@@ -522,7 +550,8 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
   <header class="hero">
     <h1>${escapeHtml(title)}</h1>
     <div class="meta">
-      generated ${escapeHtml(generatedAt)}
+      generated ${escapeHtml(formatDate(generatedAt))}
+      ${args.provider ? `· provider <code>${escapeHtml(args.provider)}</code>` : ""}
       ${args.target ? `· target <code>${escapeHtml(args.target)}</code>` : ""}
       ${args.judge ? `· judge <code>${escapeHtml(args.judge)}</code>` : ""}
     </div>
@@ -535,6 +564,15 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
     </div>
   </header>
   <main>${body}</main>
+  <script>
+    if (location.hash) {
+      var target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (target && target.tagName === "DETAILS") {
+        target.open = true;
+        target.scrollIntoView();
+      }
+    }
+  </script>
 </body>
 </html>`;
 
