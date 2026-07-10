@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { Provider } from "./provider.js";
 import type { ProviderResult } from "./provider.js";
-import { writeRunArtifacts } from "./artifacts.js";
+import { writeRunArtifacts, writeRunError } from "./artifacts.js";
 import { gradeOutputs } from "./grade.js";
 import type {
   AgentSkillsEval,
@@ -58,10 +58,12 @@ export interface RunEvalResult {
     /** Tools made available for this run, if any. */
     tools?: ToolDef[];
     toolChoice?: ToolChoice;
+    /** Set when this mode failed with an infra error rather than completing a grading run. */
+    error?: string;
   }>;
 }
 
-function evalSlug(evalCase: AgentSkillsEval, index = 0): string {
+export function evalSlug(evalCase: AgentSkillsEval, index = 0): string {
   const source = evalCase.name ?? (evalCase.id !== undefined ? `eval-${String(evalCase.id)}` : `eval-${index + 1}`);
   const slug = slugify(source, `eval-${index + 1}`);
   return slug.startsWith("eval-") ? slug : `eval-${slug}`;
@@ -216,87 +218,115 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
       toolChoice: effectiveToolChoice,
     });
 
-    if (nativeSkillLoading) await args.target.provider.prepareSkill!(args.skill, mode);
-    let completion: ProviderResult;
     try {
-      completion = await completeWithFallback({
-        provider: args.target.provider,
+      let completion: ProviderResult;
+      try {
+        if (nativeSkillLoading) await args.target.provider.prepareSkill!(args.skill, mode);
+        completion = await completeWithFallback({
+          provider: args.target.provider,
+          system,
+          user: userMessage,
+          attachments: evalFiles,
+          tools: effectiveTools,
+          toolChoice: effectiveToolChoice,
+          params: effectiveTargetParams,
+        });
+      } finally {
+        if (nativeSkillLoading) await args.target.provider.cleanupSkill?.(args.skill, mode);
+      }
+      const rawOutput = completion.error
+        ? `ERROR: ${completion.error}` +
+          (completion.output ? `\n\n---partial output---\n${completion.output}` : "")
+        : completion.output;
+      const toolCalls = completion.toolCalls;
+      const assertions =
+        args.eval.assertions && args.eval.assertions.length > 0
+          ? args.eval.assertions
+          : args.eval.expected_output
+            ? [`The output satisfies this expected output: ${args.eval.expected_output}`]
+            : [];
+      const { grading, judgePrompt } = await gradeOutputs({
+        modelOutput: rawOutput,
+        assertions,
+        toolCalls,
+        toolAssertions: args.eval.tool_assertions,
+        judge: args.judge,
+        judgeParams: effectiveJudgeParams,
+        gradingPrompt: args.gradingPrompt,
+      });
+      const timing = timingFrom(completion);
+      writeRunArtifacts(
+        runDir,
+        timing,
+        grading,
+        rawOutput,
+        completion.outputFiles ?? [],
+        {
+          system,
+          user: userMessage,
+          judgePrompt,
+          fileCount: evalFiles.length,
+          tools: effectiveTools,
+          tool_choice: effectiveToolChoice,
+        },
+        toolCalls
+      );
+
+      result.modes[mode] = {
+        outputDir,
+        timing,
+        grading,
+        rawOutput,
+        toolCalls,
         system,
         user: userMessage,
-        attachments: evalFiles,
+        fileCount: evalFiles.length,
+        judgePrompt,
         tools: effectiveTools,
         toolChoice: effectiveToolChoice,
-        params: effectiveTargetParams,
+      };
+
+      args.onEvent?.({
+        type: "eval-end",
+        skill: args.skill.name,
+        evalIndex,
+        evalSlug: slug,
+        evalName: args.eval.name,
+        evalId: args.eval.id,
+        mode,
+        output: rawOutput,
+        timing,
+        grading,
+        judgePrompt,
+        toolCalls,
       });
-    } finally {
-      if (nativeSkillLoading) await args.target.provider.cleanupSkill?.(args.skill, mode);
-    }
-    const rawOutput = completion.error
-      ? `ERROR: ${completion.error}` +
-        (completion.output ? `\n\n---partial output---\n${completion.output}` : "")
-      : completion.output;
-    const toolCalls = completion.toolCalls;
-    const assertions =
-      args.eval.assertions && args.eval.assertions.length > 0
-        ? args.eval.assertions
-        : args.eval.expected_output
-          ? [`The output satisfies this expected output: ${args.eval.expected_output}`]
-          : [];
-    const { grading, judgePrompt } = await gradeOutputs({
-      modelOutput: rawOutput,
-      assertions,
-      toolCalls,
-      toolAssertions: args.eval.tool_assertions,
-      judge: args.judge,
-      judgeParams: effectiveJudgeParams,
-      gradingPrompt: args.gradingPrompt,
-    });
-    const timing = timingFrom(completion);
-    writeRunArtifacts(
-      runDir,
-      timing,
-      grading,
-      rawOutput,
-      completion.outputFiles ?? [],
-      {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeRunError(runDir, message);
+      result.modes[mode] = {
+        outputDir,
         system,
         user: userMessage,
-        judgePrompt,
         fileCount: evalFiles.length,
         tools: effectiveTools,
-        tool_choice: effectiveToolChoice,
-      },
-      toolCalls
-    );
-
-    result.modes[mode] = {
-      outputDir,
-      timing,
-      grading,
-      rawOutput,
-      toolCalls,
-      system,
-      user: userMessage,
-      fileCount: evalFiles.length,
-      judgePrompt,
-      tools: effectiveTools,
-      toolChoice: effectiveToolChoice,
-    };
-
-    args.onEvent?.({
-      type: "eval-end",
-      skill: args.skill.name,
-      evalIndex,
-      evalSlug: slug,
-      evalName: args.eval.name,
-      evalId: args.eval.id,
-      mode,
-      output: rawOutput,
-      timing,
-      grading,
-      judgePrompt,
-      toolCalls,
-    });
+        toolChoice: effectiveToolChoice,
+        error: message,
+        timing: { total_tokens: 0, duration_ms: 0 },
+        grading: { assertion_results: [], summary: { passed: 0, failed: 0, total: 0, pass_rate: 0 } },
+        rawOutput: "",
+        judgePrompt: "",
+      };
+      args.onEvent?.({
+        type: "eval-error",
+        skill: args.skill.name,
+        evalIndex,
+        evalSlug: slug,
+        evalName: args.eval.name,
+        evalId: args.eval.id,
+        mode,
+        error: message,
+      });
+    }
   }
 
   return result;

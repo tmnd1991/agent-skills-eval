@@ -72,6 +72,20 @@ export function writeRunArtifacts(
   }
 }
 
+/**
+ * Marks a run as errored (infra failure, not a grading result). Deliberately
+ * does not write grading.json/timing.json — an errored run gets a distinct
+ * marker, not fabricated pass/fail data.
+ */
+export function writeRunError(runDir: string, error: string): void {
+  ensureDir(runDir);
+  writeFileSync(
+    path.join(runDir, "error.json"),
+    `${JSON.stringify({ error, timestamp: new Date().toISOString() }, null, 2)}\n`,
+    "utf-8"
+  );
+}
+
 function mean(values: number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;

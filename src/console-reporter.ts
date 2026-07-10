@@ -20,6 +20,7 @@
 import type {
   AssertionResult,
   EvalEndEvent,
+  EvalErrorEvent,
   EvalStartEvent,
   RunMode,
   SkillsEvent,
@@ -268,6 +269,23 @@ export function consoleReporter(options: ConsoleReporterOptions = {}): (event: S
     }
   }
 
+  function onEvalError(e: EvalErrorEvent): void {
+    const key = bufferKey(e);
+    const buf = buffers.get(key);
+    // If eval-start was missed (shouldn't happen in normal flow) fall back to
+    // direct stdout writes so we don't silently drop output.
+    activeBuffer = buf ?? null;
+
+    write(`    ${paint("red", "error:")}   ${clip(e.error, snippetLength)}`);
+
+    activeBuffer = null;
+    if (buf) {
+      // Atomic flush: one write per (skill, eval, mode) block.
+      baseOut(buf.join("\n"));
+      buffers.delete(key);
+    }
+  }
+
   function onSuiteEnd(e: SuiteEndEvent): void {
     const rs = e.benchmark.run_summary;
     const withPct = (rs.with_skill.pass_rate.mean * 100).toFixed(1);
@@ -317,6 +335,9 @@ export function consoleReporter(options: ConsoleReporterOptions = {}): (event: S
         return;
       case "eval-end":
         onEvalEnd(event);
+        return;
+      case "eval-error":
+        onEvalError(event);
         return;
       case "suite-end":
         onSuiteEnd(event);

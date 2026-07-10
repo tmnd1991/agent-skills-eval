@@ -8,6 +8,7 @@ import {
   discoverSkills,
   ensureIterationDir,
   evaluateSkills,
+  generateReport,
   gradeOutputs,
   jsonlReporter,
   loadConfigFile,
@@ -699,4 +700,151 @@ test("jsonlReporter emits machine-readable event logs", async () => {
   assert.equal(event.type, "suite-start");
   assert.equal(event.skill, "demo");
   assert.match(event.ts, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("runEval never rejects on a prepareSkill failure, and still calls cleanupSkill", async () => {
+  const root = tempRoot();
+  const skill = loadSkill(writeSkill(root));
+  const workspace = path.join(root, "workspace");
+  let cleanupCalls = 0;
+  const target = {
+    name: "prepare-fail",
+    model: "prepare-fail-model",
+    async prepareSkill() {
+      throw new Error("prepare boom");
+    },
+    async cleanupSkill() {
+      cleanupCalls++;
+    },
+    async complete() {
+      return {
+        provider: "prepare-fail",
+        model: "prepare-fail-model",
+        output: "should not be reached",
+        latencyMs: 1,
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0,
+      };
+    },
+  };
+
+  const result = await runEval({
+    skill,
+    eval: skill.evals[0],
+    modes: ["with_skill", "without_skill"],
+    target: { model: "target", provider: target },
+    judge: { model: "judge", provider: judgeProvider(true) },
+    workspace,
+    iteration: 1,
+  });
+
+  assert.equal(result.modes.with_skill.error, "prepare boom");
+  assert.equal(result.modes.without_skill.error, "prepare boom");
+  assert.equal(result.modes.with_skill.grading.summary.total, 0);
+  assert.equal(result.modes.with_skill.grading.summary.pass_rate, 0);
+  assert.equal(cleanupCalls, 2);
+  const runDir = path.join(workspace, "iteration-1", result.slug, "with_skill");
+  assert.ok(existsSync(path.join(runDir, "error.json")));
+  assert.ok(!existsSync(path.join(runDir, "grading.json")));
+});
+
+test("evaluateSkills tolerates one task's prepareSkill failure and completes the whole run", async () => {
+  const root = tempRoot();
+  const name = "prepare-fail-skill";
+  writeConcurrencySkill(root, name, 3);
+
+  let prepareCalls = 0;
+  const targetProvider = {
+    name: "prepare-fail",
+    model: "prepare-fail-model",
+    async prepareSkill() {
+      prepareCalls++;
+      if (prepareCalls === 2) throw new Error("prepare boom for case-2");
+    },
+    async cleanupSkill() {},
+    async complete() {
+      return {
+        provider: "prepare-fail",
+        model: "prepare-fail-model",
+        output: "ok response",
+        latencyMs: 10,
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0,
+      };
+    },
+  };
+
+  const workspace = path.join(root, "bench-workspace");
+  const result = await evaluateSkills({
+    root,
+    workspace,
+    target: { model: "target", provider: targetProvider },
+    judge: { model: "judge", provider: fixedJudgeProvider() },
+    concurrency: 1,
+  });
+
+  assert.equal(result.errored, 1);
+  assert.equal(result.passed + result.failed, 2);
+  assert.ok(result.reportPath && existsSync(result.reportPath));
+
+  const skillResult = result.skills[0];
+  assert.equal(skillResult.errored, 1);
+
+  const benchmark = JSON.parse(readFileSync(skillResult.benchmarkPath, "utf8"));
+  // Mean over only the 2 successful runs (10ms each = 0.01s) — not diluted by
+  // a zeroed-out 3rd run, which would pull the mean toward 0.
+  assert.equal(benchmark.run_summary.with_skill.time_seconds.mean, 0.01);
+
+  const erroredRunDir = path.join(workspace, skillResult.slug, "eval-case-2", "with_skill");
+  assert.ok(existsSync(path.join(erroredRunDir, "error.json")));
+  assert.ok(!existsSync(path.join(erroredRunDir, "grading.json")));
+});
+
+test("report.ts renders an errored run without throwing", () => {
+  const root = tempRoot();
+  const workspace = path.join(root, "workspace");
+  const skillDir = path.join(workspace, "report-test-skill");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(
+    path.join(skillDir, "meta.json"),
+    JSON.stringify({
+      name: "report-test-skill",
+      slug: "report-test-skill",
+      relPath: "report-test-skill",
+      target: "target",
+      judge: "judge",
+      modes: ["with_skill"],
+      generated_at: new Date().toISOString(),
+    }),
+  );
+
+  const erroredDir = path.join(skillDir, "eval-errored-case", "with_skill");
+  mkdirSync(erroredDir, { recursive: true });
+  writeFileSync(
+    path.join(erroredDir, "error.json"),
+    JSON.stringify({ error: "prepare boom", timestamp: new Date().toISOString() }),
+  );
+
+  const okDir = path.join(skillDir, "eval-ok-case", "with_skill");
+  mkdirSync(path.join(okDir, "outputs"), { recursive: true });
+  writeFileSync(
+    path.join(okDir, "grading.json"),
+    JSON.stringify({
+      assertion_results: [{ text: "ok", passed: true, evidence: "ok" }],
+      summary: { passed: 1, failed: 0, total: 1, pass_rate: 1 },
+    }),
+  );
+  writeFileSync(path.join(okDir, "timing.json"), JSON.stringify({ total_tokens: 5, duration_ms: 10 }));
+  writeFileSync(path.join(okDir, "outputs", "response.txt"), "ok output");
+  writeFileSync(path.join(okDir, "prompts.json"), JSON.stringify({ user: "do it", fileCount: 0 }));
+
+  const result = generateReport({ workspace });
+  assert.ok(existsSync(result.reportPath));
+
+  const html = readFileSync(result.reportPath, "utf8");
+  assert.match(html, /ERRORED/);
+  assert.match(html, /eval errored/);
+  assert.match(html, /ok output/);
 });

@@ -4,6 +4,7 @@ export type {
   AttachedFile,
   BenchmarkJson,
   EvalEndEvent,
+  EvalErrorEvent,
   EvalStartEvent,
   GradingJson,
   RunMode,

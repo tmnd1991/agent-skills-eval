@@ -11,7 +11,7 @@ import {
 import { consoleReporter } from "./console-reporter.js";
 import { discoverSkills, type SkillRef } from "./discover.js";
 import { generateReport } from "./report.js";
-import { runEval, type RunMode } from "./run-eval.js";
+import { evalSlug, runEval, type RunMode } from "./run-eval.js";
 import { loadSkill } from "./skill.js";
 import { slugify } from "./fs-utils.js";
 import type { AgentSkillsEval, Skill, SkillsEvent } from "./types.js";
@@ -83,6 +83,8 @@ export interface EvaluateSkillsArgs {
 export interface EvaluateSkillsResult {
   passed: number;
   failed: number;
+  /** Number of (eval, mode) runs that failed with an infra error rather than completing a grading run. */
+  errored: number;
   skills: {
     skill: string;
     slug: string;
@@ -90,6 +92,7 @@ export interface EvaluateSkillsResult {
     evals: number;
     passRate: number;
     benchmarkPath: string;
+    errored: number;
   }[];
   /** Set when `loop: true` — the freshly-allocated `.history/iteration-N` slot. */
   historyIteration?: number;
@@ -109,6 +112,7 @@ interface PreparedSkill {
   aggregateRuns: { mode: RunMode; passRate: number; durationMs: number; tokens: number }[];
   passed: number;
   failed: number;
+  errored: number;
   completed: number;
 }
 
@@ -129,7 +133,15 @@ async function runPool<T>(items: T[], n: number, work: (t: T) => Promise<void>):
     while (queue.length > 0) {
       const next = queue.shift();
       if (next === undefined) return;
-      await work(next);
+      // Defense in depth: `work` should isolate its own errors (it does, via
+      // the try/catch/finally in `runTask` below), but a future caller that
+      // forgets to catch inside `work` shouldn't be able to abort every
+      // sibling task in the pool via `Promise.all`.
+      try {
+        await work(next);
+      } catch (err) {
+        console.error(err);
+      }
     }
   });
   await Promise.all(workers);
@@ -244,15 +256,15 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       judge: args.judge.model,
     });
 
-    prepared.push({ ref, skill, slug, skillDir, aggregateRuns: [], passed: 0, failed: 0, completed: 0 });
+    prepared.push({ ref, skill, slug, skillDir, aggregateRuns: [], passed: 0, failed: 0, errored: 0, completed: 0 });
   }
 
   // ─── Phase 2: flatten (skill, evalCase) tasks + run via worker pool ───────
   // Cross-skill ordering note: with concurrency > 1, suite-end for skill A
   // may fire before suite-end for skill B even if A appears later in
   // discovery — completion order tracks the pool, not the discovery walk.
-  // Per-eval ordering is preserved: eval-start strictly precedes eval-end for
-  // the same case (enforced inside runEval).
+  // Per-eval ordering is preserved: eval-start strictly precedes exactly one
+  // of eval-end/eval-error for the same case (enforced inside runEval).
   const tasks: Task[] = [];
   for (const p of prepared) {
     if (p.skill.evals.length === 0) {
@@ -271,51 +283,74 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
   async function runTask(task: Task): Promise<void> {
     const { prepared: p, evalCase, index } = task;
     args.onLog?.(`skill ${p.skill.name}: eval ${evalCase.name ?? evalCase.id ?? index + 1}`);
-    const result = await runEval({
-      skill: p.skill,
-      eval: evalCase,
-      index,
-      modes,
-      target: args.target,
-      judge: args.judge,
-      workspace: runWorkspace.dir,
-      evalRootDir: p.skillDir,
-      iteration: 0,
-      targetParams: args.targetParams,
-      judgeParams: args.judgeParams,
-      onEvent: emit,
-    });
-
-    // JS is single-threaded between awaits; the stat updates below run
-    // atomically relative to other workers, so no explicit lock is needed.
-    for (const mode of modes) {
-      const modeResult = result.modes[mode];
-      if (!modeResult) continue;
-      p.aggregateRuns.push({
-        mode,
-        passRate: modeResult.grading.summary.pass_rate,
-        durationMs: modeResult.timing.duration_ms,
-        tokens: modeResult.timing.total_tokens,
+    try {
+      const result = await runEval({
+        skill: p.skill,
+        eval: evalCase,
+        index,
+        modes,
+        target: args.target,
+        judge: args.judge,
+        workspace: runWorkspace.dir,
+        evalRootDir: p.skillDir,
+        iteration: 0,
+        targetParams: args.targetParams,
+        judgeParams: args.judgeParams,
+        onEvent: emit,
       });
-    }
 
-    const withSkill = result.modes.with_skill;
-    if (withSkill) {
-      p.passed += withSkill.grading.summary.passed;
-      p.failed += withSkill.grading.summary.failed;
-    }
+      // JS is single-threaded between awaits; the stat updates below run
+      // atomically relative to other workers, so no explicit lock is needed.
+      for (const mode of modes) {
+        const modeResult = result.modes[mode];
+        if (!modeResult) continue;
+        if (modeResult.error) {
+          // Don't push a zeroed run into aggregateRuns — it would falsely
+          // improve mean latency/pass-rate for the skill.
+          p.errored++;
+          continue;
+        }
+        p.aggregateRuns.push({
+          mode,
+          passRate: modeResult.grading.summary.pass_rate,
+          durationMs: modeResult.timing.duration_ms,
+          tokens: modeResult.timing.total_tokens,
+        });
+      }
 
-    p.completed++;
-    if (p.completed === p.skill.evals.length) {
-      const benchmark = buildBenchmark(p.aggregateRuns);
-      const benchmarkPath = path.join(p.skillDir, "benchmark.json");
-      writeFileSync(benchmarkPath, `${JSON.stringify(benchmark, null, 2)}\n`, "utf-8");
+      const withSkill = result.modes.with_skill;
+      if (withSkill && !withSkill.error) {
+        p.passed += withSkill.grading.summary.passed;
+        p.failed += withSkill.grading.summary.failed;
+      }
+    } catch (err) {
+      // Safety net only: `runEval` isolates per-mode failures internally and
+      // should not reject. If it somehow does (a bug outside the per-mode
+      // loop), count every mode as errored rather than losing the whole run.
+      p.errored += modes.length;
       emit?.({
-        type: "suite-end",
+        type: "eval-error",
         skill: p.skill.name,
-        benchmarkPath,
-        benchmark,
+        evalIndex: index,
+        evalSlug: evalSlug(evalCase, index),
+        evalName: evalCase.name,
+        evalId: evalCase.id,
+        mode: modes[0],
+        error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      p.completed++;
+      if (p.completed === p.skill.evals.length) {
+        const benchmark = buildBenchmark(p.aggregateRuns);
+        const benchmarkPath = path.join(p.skillDir, "benchmark.json");
+        writeFileSync(benchmarkPath, `${JSON.stringify(benchmark, null, 2)}\n`, "utf-8");
+        emit?.({
+          type: "suite-end",
+          skill: p.skill.name,
+          benchmarkPath,
+          benchmark,
+        });
+      }
     }
   }
 
@@ -327,11 +362,13 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
   // ─── Phase 3: aggregate result + history snapshot + HTML report ───────────
   let totalPassed = 0;
   let totalFailed = 0;
+  let totalErrored = 0;
   const skills: EvaluateSkillsResult["skills"] = [];
   const writtenSkillDirs: { slug: string; dir: string }[] = [];
   for (const p of prepared) {
     totalPassed += p.passed;
     totalFailed += p.failed;
+    totalErrored += p.errored;
     const total = p.passed + p.failed;
     skills.push({
       skill: p.skill.name,
@@ -340,6 +377,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       evals: p.skill.evals.length,
       passRate: total === 0 ? 1 : p.passed / total,
       benchmarkPath: path.join(p.skillDir, "benchmark.json"),
+      errored: p.errored,
     });
     writtenSkillDirs.push({ slug: p.slug, dir: p.skillDir });
   }
@@ -374,6 +412,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
   return {
     passed: totalPassed,
     failed: totalFailed,
+    errored: totalErrored,
     skills,
     historyIteration,
     iteration: runWorkspace.iteration,

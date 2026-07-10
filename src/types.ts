@@ -156,8 +156,21 @@ export interface SuiteEndEvent {
   benchmark: BenchmarkJson;
 }
 
+/** Emitted instead of `eval-end` when a mode's run fails with an infra error (not a grading failure). */
+export interface EvalErrorEvent {
+  type: "eval-error";
+  skill: string;
+  evalIndex: number;
+  evalSlug: string;
+  evalName?: string;
+  evalId?: number | string;
+  mode: RunMode;
+  error: string;
+}
+
 export type SkillsEvent =
   | SuiteStartEvent
   | EvalStartEvent
   | EvalEndEvent
+  | EvalErrorEvent
   | SuiteEndEvent;

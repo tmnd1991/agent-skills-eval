@@ -69,13 +69,26 @@ interface SkillMeta {
   generated_at?: string;
 }
 
-interface ReportRun {
+interface ReportRunOk {
   mode: "with_skill" | "without_skill";
   output: string;
   grading: GradingJson;
   timing: TimingFile;
   prompts?: RunPromptsFile;
   toolCalls?: ToolCall[];
+  error?: undefined;
+}
+
+interface ReportRunError {
+  mode: "with_skill" | "without_skill";
+  error: string;
+}
+
+type ReportRun = ReportRunOk | ReportRunError;
+
+/** `error` alone doesn't discriminate the union soundly (it's a plain `string`, not a literal), so use an explicit type guard. */
+function isErrorRun(run: ReportRun): run is ReportRunError {
+  return typeof run.error === "string";
 }
 
 interface ReportEval {
@@ -98,6 +111,7 @@ interface ReportSkill {
     withoutTotal: number;
     withoutPassRate: number;
     regressions: number;
+    errored: number;
   };
 }
 
@@ -145,6 +159,7 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
   let withoutPassed = 0;
   let withoutFailed = 0;
   let regressions = 0;
+  let errored = 0;
 
   for (const entry of entries) {
     const evalDir = path.join(skillDir, entry.name);
@@ -153,6 +168,12 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
     for (const mode of ["with_skill", "without_skill"] as const) {
       const runDir = path.join(evalDir, mode);
       if (!existsSync(runDir)) continue;
+      const errorFile = readJson<{ error: string }>(path.join(runDir, "error.json"));
+      if (errorFile) {
+        modes.push({ mode, error: errorFile.error });
+        if (mode === "with_skill") errored += 1;
+        continue;
+      }
       const grading = readJson<GradingJson>(path.join(runDir, "grading.json"));
       const timing = readJson<TimingFile>(path.join(runDir, "timing.json"));
       if (!grading || !timing) continue;
@@ -177,7 +198,13 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
 
     const withRun = modes.find((m) => m.mode === "with_skill");
     const withoutRun = modes.find((m) => m.mode === "without_skill");
-    if (withRun && withoutRun && withoutRun.grading.summary.pass_rate >= withRun.grading.summary.pass_rate) {
+    if (
+      withRun &&
+      !isErrorRun(withRun) &&
+      withoutRun &&
+      !isErrorRun(withoutRun) &&
+      withoutRun.grading.summary.pass_rate >= withRun.grading.summary.pass_rate
+    ) {
       regressions += 1;
     }
 
@@ -203,6 +230,7 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
       withoutTotal,
       withoutPassRate: withoutTotal === 0 ? 1 : withoutPassed / withoutTotal,
       regressions,
+      errored,
     },
   };
 }
@@ -349,7 +377,7 @@ function renderToolCallsPanel(calls: ToolCall[] | undefined): string {
 
 /** Did a `with_skill` run's model actually call the `skill` tool for this skill? `undefined` when not applicable (without_skill mode, or no tool-call data captured). Tool name is matched case-insensitively — opencode calls it `skill`, Claude Code calls it `Skill`. The argument key also differs: opencode uses `name`, Claude Code uses `skill`. */
 function skillWasInvoked(run: ReportRun, skillName: string): boolean | undefined {
-  if (run.mode !== "with_skill" || !run.toolCalls) return undefined;
+  if (run.mode !== "with_skill" || isErrorRun(run) || !run.toolCalls) return undefined;
   return run.toolCalls.some((c) => {
     if (c.function.name.toLowerCase() !== "skill") return false;
     const args = c.parsedArguments as Record<string, unknown> | undefined;
@@ -358,6 +386,17 @@ function skillWasInvoked(run: ReportRun, skillName: string): boolean | undefined
 }
 
 function renderRun(run: ReportRun, skillName: string): string {
+  if (isErrorRun(run)) {
+    return `
+      <section class="run run-${run.mode}">
+        <header class="run-head">
+          <span class="mode mode-${run.mode}">${modeLabel(run.mode)}</span>
+          <span class="status errored">ERRORED</span>
+        </header>
+        <details class="output" open><summary>error</summary><pre>${escapeHtml(run.error)}</pre></details>
+      </section>
+    `;
+  }
   const summary = run.grading.summary;
   const passed = summary.failed === 0 && summary.total > 0;
   const status = summary.total === 0 ? "n/a" : passed ? "PASS" : "FAIL";
@@ -394,43 +433,62 @@ function renderRun(run: ReportRun, skillName: string): string {
   `;
 }
 
+/** First non-errored run's user prompt — the same test case drives every mode, so it's identical across runs. */
+function findUserPrompt(modes: ReportRun[]): string | undefined {
+  for (const m of modes) {
+    if (!isErrorRun(m) && m.prompts?.user) return m.prompts.user;
+  }
+  return undefined;
+}
+
 function renderEval(ev: ReportEval, skillName: string, skillSlug: string): string {
   const withSkillRun = ev.modes.find((m) => m.mode === "with_skill");
   const withoutSkillRun = ev.modes.find((m) => m.mode === "without_skill");
+  const hasError = ev.modes.some(isErrorRun);
   const gradedRun = withSkillRun ?? ev.modes[0];
-  const allPassed = gradedRun !== undefined && gradedRun.grading.summary.failed === 0 && gradedRun.grading.summary.total > 0;
-  const cls = allPassed ? "ok" : "bad";
+  const allPassed =
+    gradedRun !== undefined &&
+    !isErrorRun(gradedRun) &&
+    gradedRun.grading.summary.failed === 0 &&
+    gradedRun.grading.summary.total > 0;
+  const cls = hasError ? "errored" : allPassed ? "ok" : "bad";
   const anchorId = `${escapeHtml(skillSlug)}--${escapeHtml(ev.slug)}`;
-  // Same test case drives every mode, so the user prompt is identical across
-  // runs (unlike the judge prompt, which embeds each run's own output) \u2014
-  // show it once instead of once per run.
-  const userPrompt = ev.modes.find((m) => m.prompts?.user)?.prompts?.user ?? "(unknown)";
+  const userPrompt = findUserPrompt(ev.modes) ?? "(unknown)";
 
   const isRegression =
     withSkillRun !== undefined &&
+    !isErrorRun(withSkillRun) &&
     withoutSkillRun !== undefined &&
+    !isErrorRun(withoutSkillRun) &&
     withoutSkillRun.grading.summary.pass_rate >= withSkillRun.grading.summary.pass_rate;
 
-  const withSkillLabel = withSkillRun
-    ? `<span class="muted">${withSkillRun.grading.summary.passed}/${withSkillRun.grading.summary.total} with skill</span>`
-    : "";
-  const baselineLabel = withoutSkillRun
-    ? (() => {
-        const delta = withSkillRun ? withSkillRun.grading.summary.passed - withoutSkillRun.grading.summary.passed : undefined;
-        const deltaLabel = delta !== undefined ? ` <span class="muted">(\u0394 ${delta >= 0 ? "+" : ""}${delta})</span>` : "";
-        return `<span class="muted">\u00b7 ${withoutSkillRun.grading.summary.passed}/${withoutSkillRun.grading.summary.total} baseline</span>${deltaLabel}`;
-      })()
-    : "";
+  const withSkillLabel =
+    withSkillRun && !isErrorRun(withSkillRun)
+      ? `<span class="muted">${withSkillRun.grading.summary.passed}/${withSkillRun.grading.summary.total} with skill</span>`
+      : "";
+  const baselineLabel =
+    withoutSkillRun && !isErrorRun(withoutSkillRun)
+      ? (() => {
+          const delta =
+            withSkillRun && !isErrorRun(withSkillRun)
+              ? withSkillRun.grading.summary.passed - withoutSkillRun.grading.summary.passed
+              : undefined;
+          const deltaLabel = delta !== undefined ? ` <span class="muted">(\u0394 ${delta >= 0 ? "+" : ""}${delta})</span>` : "";
+          return `<span class="muted">\u00b7 ${withoutSkillRun.grading.summary.passed}/${withoutSkillRun.grading.summary.total} baseline</span>${deltaLabel}`;
+        })()
+      : "";
   const regressionBadge = isRegression ? `<span class="regression-flag">\u2691 baseline tied/won</span>` : "";
+  const errorBadge = hasError ? `<span class="skill-invoked bad">errored</span>` : "";
 
   return `
     <details class="eval ${cls}" id="${anchorId}">
       <summary>
-        <span class="eval-status">${allPassed ? "\u2713" : "\u2717"}</span>
+        <span class="eval-status">${hasError ? "\u26a0" : allPassed ? "\u2713" : "\u2717"}</span>
         <span class="eval-name" title="${escapeHtml(ev.slug)}">${escapeHtml(humanizeEvalName(ev.slug))}</span>
         ${withSkillLabel}
         ${baselineLabel}
         ${regressionBadge}
+        ${errorBadge}
       </summary>
       <div class="eval-body">
         <details class="prompt"><summary>user prompt</summary><pre>${escapeHtml(userPrompt)}</pre></details>
@@ -493,6 +551,7 @@ const STYLES = `
   header.hero .stat.ok .value { color: var(--ok); }
   header.hero .stat.bad .value { color: var(--bad); }
   header.hero .stat.flag .value { color: var(--flag); }
+  header.hero .stat.warn .value { color: var(--warn); }
   header.hero .totals-caption { margin-top: 10px; }
   header.hero .layout-switch { position: relative; display: inline-flex; margin-top: 14px; padding: 3px; background: var(--bg-alt); border: 1px solid var(--border); border-radius: 999px; }
   header.hero .layout-switch::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); background: var(--bg); border: 1px solid var(--border); border-radius: 999px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); transition: transform 0.2s ease; z-index: 0; }
@@ -534,9 +593,11 @@ const STYLES = `
   details.eval[open] > summary { border-bottom: 1px solid var(--border); }
   details.eval.bad > summary { background: var(--bad-bg); }
   details.eval.ok > summary { background: var(--ok-bg); }
+  details.eval.errored > summary { background: var(--warn-bg); }
   details.eval .eval-status { font-weight: 600; }
   details.eval.bad .eval-status { color: var(--bad); }
   details.eval.ok .eval-status { color: var(--ok); }
+  details.eval.errored .eval-status { color: var(--warn); }
   .eval-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
   .runs { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; align-items: start; }
   body:has(input[name="run-layout"][value="stacked"]:checked) .runs { grid-template-columns: 1fr; }
@@ -549,6 +610,7 @@ const STYLES = `
   .mode-without_skill { background: #fff1e5; color: #bc4c00; }
   .status.ok { color: var(--ok); font-weight: 600; }
   .status.bad { color: var(--bad); font-weight: 600; }
+  .status.errored { color: var(--warn); font-weight: 600; }
   .skill-invoked { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
   .skill-invoked.ok { background: var(--ok-bg); color: var(--ok); }
   .skill-invoked.bad { background: var(--bad-bg); color: var(--bad); }
@@ -586,6 +648,7 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
   const totalWithoutPassed = skills.reduce((sum, s) => sum + s.totals.withoutPassed, 0);
   const totalWithoutTotal = skills.reduce((sum, s) => sum + s.totals.withoutTotal, 0);
   const totalRegressions = skills.reduce((sum, s) => sum + s.totals.regressions, 0);
+  const totalErrored = skills.reduce((sum, s) => sum + s.totals.errored, 0);
   const hasBaseline = totalWithoutTotal > 0;
   const overallWithoutRate = totalWithoutTotal === 0 ? 1 : totalWithoutPassed / totalWithoutTotal;
   const generatedAt = new Date();
@@ -641,6 +704,11 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
       <div class="stat ok"><span class="label">passed</span><span class="value">${totalPassed}</span></div>
       <div class="stat ${totalFailed > 0 ? "bad" : ""}"><span class="label">failed</span><span class="value">${totalFailed}</span></div>
       <div class="stat ${rateClass(overallRate)}"><span class="label">pass rate</span><span class="value">${pct(overallRate)}</span></div>
+      ${
+        totalErrored > 0
+          ? `<div class="stat warn"><span class="label">errored</span><span class="value">${totalErrored}</span></div>`
+          : ""
+      }
       ${
         hasBaseline
           ? `<div class="stat ${totalRegressions > 0 ? "flag" : ""}"><span class="label">regressions</span><span class="value">${totalRegressions}</span></div>`
