@@ -442,6 +442,15 @@ The static HTML report is built from disk artifacts and shows everything you'd w
 
 Use `--report-output` (or `report.output` in YAML) to choose where the report lands.
 
+To re-render a report from artifacts already on disk — after editing `src/report.ts`, for example — without re-running any evals:
+
+```bash
+npm run build
+node scripts/render-report.mjs <workspace> [--output <dir>] [--title <title>] [--target <model>] [--judge <model>] [--provider <name>]
+```
+
+`<workspace>` is an `iteration-N` directory (or any directory containing skill subfolders with `meta.json`/`benchmark.json`/`eval-*`). Output defaults to `<workspace>/report`.
+
 ## agentskills.io compatibility
 
 Implements the [agentskills.io](https://agentskills.io) specification end to end:
