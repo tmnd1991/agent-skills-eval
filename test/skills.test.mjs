@@ -14,6 +14,7 @@ import {
   loadConfigFile,
   loadSkill,
   runEval,
+  runToolAssertions,
 } from "../dist/index.js";
 
 function tempRoot() {
@@ -847,4 +848,40 @@ test("report.ts renders an errored run without throwing", () => {
   assert.match(html, /ERRORED/);
   assert.match(html, /eval errored/);
   assert.match(html, /ok output/);
+});
+
+function toolCall(name, parsedArguments) {
+  return { type: "function", function: { name, arguments: JSON.stringify(parsedArguments) }, parsedArguments };
+}
+
+test("tool-arg-equals ignores object key order but stays array order-sensitive", () => {
+  const calls = [toolCall("search", { b: 2, a: 1 })];
+
+  const reordered = runToolAssertions(calls, [
+    { type: "tool-arg-equals", name: "search", path: "", value: { a: 1, b: 2 } },
+  ]);
+  assert.equal(reordered[0].passed, true);
+
+  const nested = runToolAssertions(
+    [toolCall("search", { filter: { b: 2, a: 1 } })],
+    [{ type: "tool-arg-equals", name: "search", path: "filter", value: { a: 1, b: 2 } }],
+  );
+  assert.equal(nested[0].passed, true);
+
+  const arrayOrder = runToolAssertions(
+    [toolCall("search", { items: [1, 2] })],
+    [{ type: "tool-arg-equals", name: "search", path: "items", value: [2, 1] }],
+  );
+  assert.equal(arrayOrder[0].passed, false);
+
+  const structurallyDifferent = runToolAssertions(calls, [
+    { type: "tool-arg-equals", name: "search", path: "", value: { a: 1, b: 2, c: 3 } },
+  ]);
+  assert.equal(structurallyDifferent[0].passed, false);
+
+  const nan = runToolAssertions(
+    [toolCall("search", { n: NaN })],
+    [{ type: "tool-arg-equals", name: "search", path: "n", value: NaN }],
+  );
+  assert.equal(nan[0].passed, true);
 });

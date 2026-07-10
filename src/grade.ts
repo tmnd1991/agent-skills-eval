@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { Provider } from "./provider.js";
 import type { ProviderResult } from "./provider.js";
 import type { AttachedFile, ToolAssertion, ToolCall } from "./types.js";
@@ -189,12 +190,10 @@ function getByPath(root: unknown, path: string): unknown {
   return cur;
 }
 
+// Structural equality for tool-arg-equals: order-independent for object keys,
+// order-sensitive for array elements (unlike the previous JSON.stringify comparison).
 function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (a === null || b === null) return false;
-  if (typeof a !== "object") return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+  return isDeepStrictEqual(a, b);
 }
 
 function describeToolAssertion(a: ToolAssertion): string {
