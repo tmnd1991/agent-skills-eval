@@ -139,6 +139,11 @@ test("CLI runs from YAML config and writes JSONL logs plus report artifacts", as
     assert.equal(events[0].type, "suite-start");
     assert.ok(events.some((event) => event.type === "eval-end" && event.mode === "with_skill"));
     assert.ok(mock.requests.length >= 4, "baseline run should call target and judge for both modes");
+
+    const requestsWithFile = mock.requests.filter((req) =>
+      (req.messages?.at(-1)?.content ?? "").includes("<file path=\"evals/files/revenue.csv\"")
+    );
+    assert.equal(requestsWithFile.length, 2, "both with_skill and without_skill target requests should include the attached file");
   } finally {
     await mock.close();
   }

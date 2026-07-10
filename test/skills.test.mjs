@@ -131,6 +131,10 @@ test("runEval supports complete-only provider fallback and writes artifacts", as
   });
   assert.ok(target.prompts[0].includes("---USER REQUEST---"));
   assert.ok(target.prompts[0].includes("<file path=\"evals/files/data.csv\""));
+  assert.ok(target.prompts[1].includes("<file path=\"evals/files/data.csv\""));
+  assert.ok(!target.prompts[1].includes("<skill name="));
+  assert.equal(result.modes.without_skill.fileCount, result.modes.with_skill.fileCount);
+  assert.equal(result.modes.without_skill.fileCount, 2);
   assert.ok(existsSync(path.join(workspace, "iteration-1", result.slug, "with_skill", "grading.json")));
   assert.ok(existsSync(path.join(workspace, "iteration-1", result.slug, "without_skill", "timing.json")));
 });

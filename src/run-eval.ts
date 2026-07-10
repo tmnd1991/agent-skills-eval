@@ -184,6 +184,7 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
     args.judgeParams,
     args.skill.defaults?.judge?.params
   );
+  const evalFiles = readEvalFiles(args.skill, args.eval);
 
   // If the target provider can natively discover skills on disk (e.g.
   // opencode's own skill-directory scan), let it — don't also inject the
@@ -193,7 +194,6 @@ export async function runEval(args: RunEvalArgs): Promise<RunEvalResult> {
   for (const mode of args.modes) {
     const runDir = path.join(evalDir, mode);
     const outputDir = path.join(runDir, "outputs");
-    const evalFiles = mode === "with_skill" ? readEvalFiles(args.skill, args.eval) : [];
     const system = nativeSkillLoading
       ? undefined
       : mode === "with_skill"
