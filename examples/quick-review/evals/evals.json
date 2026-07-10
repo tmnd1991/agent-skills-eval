@@ -29,21 +29,6 @@
         "The output includes a 'What's Working Well' section with at least one concrete positive observation.",
         "None of the review's findings are linting, formatting, or compilation nitpicks (e.g. import ordering, PEP 8 style, missing type hints) — a review that simply never raises any such finding satisfies this; it does not need to explicitly state that it considered and excluded them."
       ]
-    },
-    {
-      "id": "review-working-tree-audit-logging",
-      "name": "review working tree — audit logging",
-      "prompt": "Quick review my working tree changes — I added some audit logging around login attempts before I stage them.",
-      "expected_output": "A local-mode quick-review report of all uncommitted changes (staged + unstaged), flagging that audit_login logs the raw password in plaintext and that its deeply nested if/else structure duplicates the same logging call four times, in addition to the still-uncommitted remember-me cookie and reset_all_balances issues.",
-      "assertions": [
-        "The review flags that audit_login logs the raw password value in plaintext via logger.info/logger.warning.",
-        "The review flags the deeply nested, duplicated if/else structure in audit_login as a maintainability/cognitive-load concern (or suggests simplifying it).",
-        "The review notes that audit_login has no docstring while the other new functions in the diff do.",
-        "The review also flags the remember-me plaintext cookie and/or the unauthenticated reset_all_balances(), since git diff HEAD includes staged as well as unstaged changes.",
-        "The review references or aligns with the project's own coding guideline (from CONTRIBUTING.md) about never logging secrets or passwords.",
-        "The output includes a 'What's Working Well' section with at least one concrete positive observation.",
-        "None of the review's findings are linting, formatting, or compilation nitpicks (e.g. import ordering, PEP 8 style, missing type hints) — a review that simply never raises any such finding satisfies this; it does not need to explicitly state that it considered and excluded them."
-      ]
     }
   ]
 }

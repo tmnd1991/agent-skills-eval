@@ -25,6 +25,7 @@ export type { ConsoleReporterOptions } from "./console-reporter.js";
 export type { GenerateReportArgs, GenerateReportResult } from "./report.js";
 export type {
   AgentSkillsEvalConfig,
+  ClaudeCodeConfig,
   LogFormat,
   OpencodeConfig,
   ProviderRunMode,
@@ -33,6 +34,7 @@ export type {
 export type { JsonlReporter, JsonlReporterOptions } from "./jsonl-reporter.js";
 export type { OpenAICompatibleOptions } from "./openai-compatible-provider.js";
 export type { OpencodeOptions } from "./opencode-provider.js";
+export type { ClaudeCodeOptions } from "./claude-code-provider.js";
 export type { RunPrompts } from "./artifacts.js";
 export type {
   CompleteChatArgs,
@@ -58,6 +60,7 @@ export { jsonlReporter } from "./jsonl-reporter.js";
 export { loadConfigFile, normalizeConfig } from "./config.js";
 export { OpenAICompatibleProvider } from "./openai-compatible-provider.js";
 export { OpencodeProvider } from "./opencode-provider.js";
+export { ClaudeCodeProvider } from "./claude-code-provider.js";
 export { runEval } from "./run-eval.js";
 export { loadSkill } from "./skill.js";
 export { createStaticProvider } from "./provider.js";

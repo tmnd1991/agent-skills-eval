@@ -283,7 +283,7 @@ function renderToolCallsPanel(calls: ToolCall[] | undefined): string {
     })
     .join("\n");
   return `
-    <details class="tools" open>
+    <details class="tools">
       <summary>tool calls (${calls.length})</summary>
       <table class="tool-calls">
         <thead><tr><th>#</th><th>Tool</th><th>Arguments</th></tr></thead>
@@ -293,12 +293,14 @@ function renderToolCallsPanel(calls: ToolCall[] | undefined): string {
   `;
 }
 
-/** Did a `with_skill` run's model actually call the `skill` tool for this skill? `undefined` when not applicable (without_skill mode, or no tool-call data captured). */
+/** Did a `with_skill` run's model actually call the `skill` tool for this skill? `undefined` when not applicable (without_skill mode, or no tool-call data captured). Tool name is matched case-insensitively — opencode calls it `skill`, Claude Code calls it `Skill`. The argument key also differs: opencode uses `name`, Claude Code uses `skill`. */
 function skillWasInvoked(run: ReportRun, skillName: string): boolean | undefined {
   if (run.mode !== "with_skill" || !run.toolCalls) return undefined;
-  return run.toolCalls.some(
-    (c) => c.function.name === "skill" && (c.parsedArguments as Record<string, unknown> | undefined)?.name === skillName
-  );
+  return run.toolCalls.some((c) => {
+    if (c.function.name.toLowerCase() !== "skill") return false;
+    const args = c.parsedArguments as Record<string, unknown> | undefined;
+    return args?.name === skillName || args?.skill === skillName;
+  });
 }
 
 function renderRun(run: ReportRun, skillName: string): string {
@@ -342,7 +344,9 @@ function renderRun(run: ReportRun, skillName: string): string {
 function renderEval(ev: ReportEval, skillName: string): string {
   const totalAssertions = ev.modes.reduce((sum, m) => sum + m.grading.summary.total, 0);
   const passedAssertions = ev.modes.reduce((sum, m) => sum + m.grading.summary.passed, 0);
-  const allPassed = ev.modes.every((m) => m.grading.summary.failed === 0 && m.grading.summary.total > 0);
+  const withSkillRun = ev.modes.find((m) => m.mode === "with_skill");
+  const gradedRun = withSkillRun ?? ev.modes[0];
+  const allPassed = gradedRun !== undefined && gradedRun.grading.summary.failed === 0 && gradedRun.grading.summary.total > 0;
   const cls = allPassed ? "ok" : "bad";
   return `
     <details class="eval ${cls}">

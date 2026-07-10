@@ -1,0 +1,38 @@
+# Run from the repo root:
+#   uv run examples/quick-review/evals/setup_fixture.py   # (re)build the fixture repo
+#   npx agent-skills-eval --config examples/agent-skills-eval.quick-review.claude-code.yaml
+#
+# Same eval as agent-skills-eval.quick-review.yaml but routed through the
+# claude CLI's batch mode (--run-mode claude-code) instead of opencode.
+# quick-review is a fully agentic skill (it runs git/uv commands via
+# scripts/review-tools.py), so it needs real Bash/file access rather than a
+# single chat completion.
+#
+# concurrency MUST stay at 1: every eval and every with_skill/without_skill
+# run shares the one `claudeCode.dir` fixture repo. Running more than one at
+# a time means concurrent git operations against the same working tree.
+#
+# claudeCode.auto is required for a headless run (there's no human to
+# approve claude's bash/file-edit tool prompts) but it's a real, unattended
+# auto-approval of tool use in that directory (--dangerously-skip-permissions)
+# — see the "claude-code run mode" README section before flipping it on
+# elsewhere.
+root: ./examples/quick-review
+workspace: ./agent-skills-workspace
+baseline: true
+target: claude-sonnet-5
+runMode: claude-code
+claudeCode:
+  dir: ./examples/quick-review/evals/fixture-repo
+  auto: true
+  timeoutMs: 1200000
+concurrency: 1
+layout: iteration
+strict: true
+report:
+  enabled: true
+  title: Quick Review Example Report (claude-code)
+logging:
+  format: pretty
+  verbose: false
+  color: auto
