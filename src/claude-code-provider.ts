@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
+import { safeResolve } from "./fs-utils.js";
 import type { Provider, ProviderResult, SkillSource, ToolCall } from "./provider.js";
 
 export interface ClaudeCodeOptions {
@@ -211,7 +212,10 @@ export class ClaudeCodeProvider implements Provider {
   }
 
   private skillInstallDir(name: string): string {
-    return path.join(this.dir, ".claude", "skills", name);
+    const skillsRoot = path.join(this.dir, ".claude", "skills");
+    const resolved = safeResolve(skillsRoot, name);
+    if (!resolved) throw new Error(`Invalid skill name (path escapes skills directory): ${name}`);
+    return resolved.absolutePath;
   }
 
   async complete(prompt: string): Promise<ProviderResult> {

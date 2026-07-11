@@ -10,7 +10,7 @@ import type {
   ToolChoice,
   ToolDef,
 } from "./types.js";
-import { isInsideDir, pathToPosix, readAttachedFile } from "./fs-utils.js";
+import { SKILL_NAME_PATTERN, assertSafeSkillName, isInsideDir, pathToPosix, readAttachedFile } from "./fs-utils.js";
 export type { AgentSkillsEval, AttachedFile, Skill } from "./types.js";
 
 interface SkillFrontmatter {
@@ -87,7 +87,7 @@ function validateSkillFrontmatter(dir: string, frontmatter: SkillFrontmatter, ha
     errors.push("frontmatter.name is required");
   } else {
     if (name.length > 64) errors.push("frontmatter.name must be at most 64 characters");
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+    if (!SKILL_NAME_PATTERN.test(name)) {
       errors.push("frontmatter.name must use lowercase letters, numbers, and single hyphens only");
     }
     if (name !== base) errors.push(`frontmatter.name must match parent directory name (${base})`);
@@ -381,8 +381,11 @@ export function loadSkill(
 
   const { evals, defaults } = readEvalsFile(dir);
 
+  const skillName = frontmatter.name?.trim() || path.basename(dir);
+  assertSafeSkillName(skillName, dir);
+
   return {
-    name: frontmatter.name?.trim() || path.basename(dir),
+    name: skillName,
     description: frontmatter.description?.trim() || undefined,
     license: frontmatter.license?.trim() || undefined,
     compatibility: frontmatter.compatibility?.trim() || undefined,

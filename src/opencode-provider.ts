@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import type { AssistantMessage, Message, Part } from "@opencode-ai/sdk";
+import { safeResolve } from "./fs-utils.js";
 import type { Provider, ProviderResult, SkillSource, ToolCall } from "./provider.js";
 
 export interface OpencodeOptions {
@@ -349,7 +350,10 @@ export class OpencodeProvider implements Provider {
   }
 
   private skillInstallDir(name: string): string {
-    return path.join(this.dir, ".opencode", "skills", name);
+    const skillsRoot = path.join(this.dir, ".opencode", "skills");
+    const resolved = safeResolve(skillsRoot, name);
+    if (!resolved) throw new Error(`Invalid skill name (path escapes skills directory): ${name}`);
+    return resolved.absolutePath;
   }
 
   async complete(prompt: string): Promise<ProviderResult> {

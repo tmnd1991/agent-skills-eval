@@ -148,3 +148,23 @@ test("ClaudeCodeProvider.prepareSkill: without_skill installs nothing and remove
   await p.prepareSkill(skill, "without_skill");
   assert.equal(existsSync(installDir), false);
 });
+
+test("ClaudeCodeProvider.prepareSkill: rejects a skill name that escapes the skills directory", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = { ...makeFakeSkill(), name: "../../../../tmp/pwned-claude-code" };
+  const escapedDir = path.join(tmpdir(), "tmp", "pwned-claude-code");
+
+  await assert.rejects(() => p.prepareSkill(skill, "with_skill"), /escapes skills directory/);
+  assert.equal(existsSync(escapedDir), false);
+});
+
+test("ClaudeCodeProvider.cleanupSkill: rejects a skill name that escapes the skills directory", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = { ...makeFakeSkill(), name: "../../../../tmp/pwned-claude-code-cleanup" };
+  const escapedDir = path.join(tmpdir(), "tmp", "pwned-claude-code-cleanup");
+
+  await assert.rejects(() => p.cleanupSkill(skill), /escapes skills directory/);
+  assert.equal(existsSync(escapedDir), false);
+});

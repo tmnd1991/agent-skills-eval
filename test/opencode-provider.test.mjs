@@ -264,3 +264,23 @@ test("OpencodeProvider.prepareSkill: without_skill installs nothing and removes 
   await p.prepareSkill(skill, "without_skill");
   assert.equal(existsSync(installDir), false);
 });
+
+test("OpencodeProvider.prepareSkill: rejects a skill name that escapes the skills directory", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-dir-"));
+  const p = provider("http://127.0.0.1:0", { dir });
+  const skill = { ...makeFakeSkill(), name: "../../../../tmp/pwned-opencode" };
+  const escapedDir = path.join(tmpdir(), "tmp", "pwned-opencode");
+
+  await assert.rejects(() => p.prepareSkill(skill, "with_skill"), /escapes skills directory/);
+  assert.equal(existsSync(escapedDir), false);
+});
+
+test("OpencodeProvider.cleanupSkill: rejects a skill name that escapes the skills directory", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "opencode-dir-"));
+  const p = provider("http://127.0.0.1:0", { dir });
+  const skill = { ...makeFakeSkill(), name: "../../../../tmp/pwned-opencode-cleanup" };
+  const escapedDir = path.join(tmpdir(), "tmp", "pwned-opencode-cleanup");
+
+  await assert.rejects(() => p.cleanupSkill(skill), /escapes skills directory/);
+  assert.equal(existsSync(escapedDir), false);
+});

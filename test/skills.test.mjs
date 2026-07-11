@@ -533,6 +533,51 @@ test("strict loadSkill validates required agentskills.io frontmatter", () => {
   );
 });
 
+test("non-strict loadSkill still rejects a malformed skill name", () => {
+  const root = tempRoot();
+  const dir = path.join(root, "bad-name");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: BadName\ndescription: Valid description.\n---\n\nBody.\n`);
+  assert.throws(
+    () => loadSkill(dir, { strict: false }),
+    /Invalid skill name/,
+  );
+});
+
+test("non-strict loadSkill rejects a path-traversal skill name", () => {
+  const root = tempRoot();
+  const dir = path.join(root, "evil-skill");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    `---\nname: ../../../../tmp/pwned\ndescription: Valid description.\n---\n\nBody.\n`,
+  );
+  assert.throws(() => loadSkill(dir, { strict: false }), /Invalid skill name/);
+});
+
+test("non-strict loadSkill rejects a skill name with a path separator", () => {
+  const root = tempRoot();
+  const dir = path.join(root, "slash-skill");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    `---\nname: foo/bar\ndescription: Valid description.\n---\n\nBody.\n`,
+  );
+  assert.throws(() => loadSkill(dir, { strict: false }), /Invalid skill name/);
+});
+
+test("non-strict loadSkill rejects a skill name over 64 characters", () => {
+  const root = tempRoot();
+  const dir = path.join(root, "long-name-skill");
+  mkdirSync(dir, { recursive: true });
+  const longName = "a".repeat(65);
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    `---\nname: ${longName}\ndescription: Valid description.\n---\n\nBody.\n`,
+  );
+  assert.throws(() => loadSkill(dir, { strict: false }), /Invalid skill name/);
+});
+
 test("expected_output becomes a judge assertion when assertions are omitted", async () => {
   const root = tempRoot();
   const dir = path.join(root, "expected-output");

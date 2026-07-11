@@ -103,6 +103,16 @@ export function attachedFileXml(tag: string, file: AttachedFile): string {
   return `<${tag} ${attrs}>${file.kind}</${tag}>`;
 }
 
+export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function assertSafeSkillName(name: string, context: string): void {
+  if (name.length === 0 || name.length > 64 || !SKILL_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid skill name "${name}" in ${context}: must use lowercase letters, numbers, and single hyphens only (max 64 chars)`
+    );
+  }
+}
+
 export function slugify(value: string, fallback = "item"): string {
   const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
   return slug || fallback;
