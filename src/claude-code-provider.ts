@@ -145,15 +145,18 @@ function parseOutcome(stdout: string): RunOutcome {
  * comparable to raw chat-completion counts from OpenAICompatibleProvider for
  * the same model; `auto: true` passes `--dangerously-skip-permissions`,
  * bypassing every permission prompt unattended, and is off by default;
- * capabilities are all false, so callers always merge system+user into one
- * string before calling `complete()`. Session persistence is disabled
- * (`--no-session-persistence`) since each call is a one-shot, non-resumable
- * run. The installed skill directory is shared across every call using the
- * same `dir` — use `--concurrency 1` if concurrent evals of the same skill
- * would otherwise race on install/remove.
+ * capabilities are all false except `sharedInstallDir`, so callers always
+ * merge system+user into one string before calling `complete()`. Session
+ * persistence is disabled (`--no-session-persistence`) since each call is a
+ * one-shot, non-resumable run. The installed skill directory is shared
+ * across every call using the same `dir`; evals of the same skill are
+ * automatically serialized by the runner (see `sharedInstallDir` on
+ * `capabilities`) — evals of *different* skills still race on unrelated
+ * shared state in `dir` (e.g. concurrent git operations, or a skill that
+ * writes output files into `dir` itself).
  */
 export class ClaudeCodeProvider implements Provider {
-  readonly capabilities = { systemRole: false, attachments: false, toolCalls: false };
+  readonly capabilities = { systemRole: false, attachments: false, toolCalls: false, sharedInstallDir: true };
   readonly name: string;
   readonly model: string;
   private agent?: string;

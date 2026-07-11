@@ -135,6 +135,26 @@ async function runPool<T>(items: T[], n: number, work: (t: T) => Promise<void>):
   await Promise.all(workers);
 }
 
+/**
+ * Per-key async mutex: withLock(k, fn) waits for any prior withLock(k, ...)
+ * to settle before running fn. Distinct keys never block each other.
+ */
+function createKeyedLock(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
+  const tail = new Map<string, Promise<void>>();
+  return function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = tail.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    tail.set(
+      key,
+      run.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return run;
+  };
+}
+
 export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<EvaluateSkillsResult> {
   const refs = discoverSkills(args.root, { include: args.include, exclude: args.exclude }).filter((ref) => ref.hasEvals);
   const modes: RunMode[] = args.baseline ? ["with_skill", "without_skill"] : ["with_skill"];
@@ -162,6 +182,15 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
     args.target.provider.capabilities?.toolCalls !== false &&
     args.judge.provider.capabilities?.toolCalls !== false;
   let warnedToolAssertions = false;
+
+  // prepareSkill/cleanupSkill are only ever invoked on the target provider
+  // (never the judge — see run-eval.ts), so only its capability matters here.
+  const serializeSkillInstalls = args.target.provider.capabilities?.sharedInstallDir === true;
+  if (serializeSkillInstalls && concurrency > 1) {
+    process.stderr.write(
+      "info: this provider installs skills at one shared on-disk path per skill name — evals of the same skill are automatically serialized regardless of --concurrency to avoid corrupting concurrent installs; evals of different skills still run up to --concurrency in parallel (see README \"Shared working directory\").\n"
+    );
+  }
 
   // ─── Phase 1: sequential discovery prep ───────────────────────────────────
   // Allocate skillDir + write meta.json + emit suite-start in discovery order
@@ -239,7 +268,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
     }
   }
 
-  await runPool(tasks, concurrency, async (task) => {
+  async function runTask(task: Task): Promise<void> {
     const { prepared: p, evalCase, index } = task;
     args.onLog?.(`skill ${p.skill.name}: eval ${evalCase.name ?? evalCase.id ?? index + 1}`);
     const result = await runEval({
@@ -288,7 +317,12 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
         benchmark,
       });
     }
-  });
+  }
+
+  const withSkillLock = serializeSkillInstalls ? createKeyedLock() : undefined;
+  await runPool(tasks, concurrency, (task) =>
+    withSkillLock ? withSkillLock(task.prepared.skill.name, () => runTask(task)) : runTask(task)
+  );
 
   // ─── Phase 3: aggregate result + history snapshot + HTML report ───────────
   let totalPassed = 0;

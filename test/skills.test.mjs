@@ -303,6 +303,223 @@ test("evaluateSkills runs eval cases in parallel under concurrency", async () =>
   assert.ok(existsSync(result.skills[0].benchmarkPath), "benchmark.json should be written");
 });
 
+function writeConcurrencySkill(root, name, evalCount) {
+  const dir = path.join(root, name);
+  mkdirSync(path.join(dir, "evals"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    `---\nname: ${name}\ndescription: Concurrency test.\n---\n\nBody.\n`,
+  );
+  writeFileSync(
+    path.join(dir, "evals", "evals.json"),
+    JSON.stringify({
+      skill_name: name,
+      evals: Array.from({ length: evalCount }, (_, i) => ({
+        id: i + 1,
+        name: `case-${i + 1}`,
+        prompt: `do ${i + 1}`,
+        assertions: ["ok"],
+      })),
+    }),
+  );
+  return dir;
+}
+
+const FIXED_JUDGE_OUTPUT = JSON.stringify({
+  assertion_results: [{ text: "ok", passed: true, evidence: "ok" }],
+  summary: { passed: 1, failed: 0, total: 1, pass_rate: 1 },
+});
+
+function fixedJudgeProvider() {
+  return {
+    name: "judge",
+    model: "judge-model",
+    async complete() {
+      return {
+        provider: "judge",
+        model: "judge-model",
+        output: FIXED_JUDGE_OUTPUT,
+        latencyMs: 1,
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0,
+      };
+    },
+  };
+}
+
+test("evaluateSkills serializes prepareSkill/cleanupSkill for the same skill under concurrency", async () => {
+  const root = tempRoot();
+  const name = "shared-install-skill";
+  writeConcurrencySkill(root, name, 4);
+
+  const installed = new Set();
+  const violations = [];
+  const targetProvider = {
+    name: "shared-install",
+    model: "shared-install-model",
+    capabilities: { sharedInstallDir: true },
+    async prepareSkill(skill) {
+      if (installed.has(skill.name)) violations.push(`re-entrant install of ${skill.name}`);
+      installed.add(skill.name);
+      await new Promise((r) => setTimeout(r, 20));
+    },
+    async cleanupSkill(skill) {
+      installed.delete(skill.name);
+    },
+    async complete() {
+      await new Promise((r) => setTimeout(r, 20));
+      return {
+        provider: "shared-install",
+        model: "shared-install-model",
+        output: "ok response",
+        latencyMs: 20,
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0,
+      };
+    },
+  };
+
+  const result = await evaluateSkills({
+    root,
+    workspace: path.join(root, "bench-workspace"),
+    target: { model: "target", provider: targetProvider },
+    judge: { model: "judge", provider: fixedJudgeProvider() },
+    concurrency: 4,
+    report: false,
+  });
+
+  assert.deepEqual(violations, []);
+  assert.equal(result.skills.length, 1);
+  assert.equal(result.skills[0].evals, 4);
+});
+
+test("evaluateSkills does not regress to global serialization across different skills", async () => {
+  const root = tempRoot();
+  const perCallMs = 100;
+  const evalsPerSkill = 3;
+  writeConcurrencySkill(root, "skill-one", evalsPerSkill);
+  writeConcurrencySkill(root, "skill-two", evalsPerSkill);
+
+  function slowSharedInstallProvider() {
+    return {
+      name: "shared-install",
+      model: "shared-install-model",
+      capabilities: { sharedInstallDir: true },
+      async prepareSkill() {},
+      async cleanupSkill() {},
+      async complete() {
+        await new Promise((r) => setTimeout(r, perCallMs));
+        return {
+          provider: "shared-install",
+          model: "shared-install-model",
+          output: "ok response",
+          latencyMs: perCallMs,
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: 0,
+        };
+      },
+    };
+  }
+
+  const t0 = Date.now();
+  const result = await evaluateSkills({
+    root,
+    workspace: path.join(root, "bench-workspace"),
+    target: { model: "target", provider: slowSharedInstallProvider() },
+    judge: { model: "judge", provider: fixedJudgeProvider() },
+    concurrency: 4,
+    report: false,
+  });
+  const elapsed = Date.now() - t0;
+
+  // Same-skill evals serialize (evalsPerSkill * perCallMs each), but the two
+  // skills run concurrently — total should be close to one skill's serial
+  // time, not evalsPerSkill * 2 * perCallMs (full global serialization).
+  assert.ok(
+    elapsed < evalsPerSkill * perCallMs * 2,
+    `expected cross-skill parallelism, got ${elapsed}ms (global-serial floor is ${evalsPerSkill * 2 * perCallMs}ms)`,
+  );
+  assert.equal(result.skills.length, 2);
+});
+
+test("evaluateSkills warns once about automatic same-skill serialization", async () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const messages = [];
+  process.stderr.write = (chunk, ...rest) => {
+    messages.push(String(chunk));
+    return originalWrite(chunk, ...rest);
+  };
+
+  try {
+    const root = tempRoot();
+    writeConcurrencySkill(root, "warn-skill", 2);
+    const sharedInstallProvider = {
+      name: "shared-install",
+      model: "shared-install-model",
+      capabilities: { sharedInstallDir: true },
+      async prepareSkill() {},
+      async cleanupSkill() {},
+      async complete() {
+        return {
+          provider: "shared-install",
+          model: "shared-install-model",
+          output: "ok response",
+          latencyMs: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: 0,
+        };
+      },
+    };
+
+    await evaluateSkills({
+      root,
+      workspace: path.join(root, "warn-workspace"),
+      target: { model: "target", provider: sharedInstallProvider },
+      judge: { model: "judge", provider: fixedJudgeProvider() },
+      concurrency: 4,
+      report: false,
+    });
+    const matches = messages.filter((m) => m.includes("automatically serialized"));
+    assert.equal(matches.length, 1, `expected exactly one warning, got ${matches.length}`);
+
+    messages.length = 0;
+    await evaluateSkills({
+      root,
+      workspace: path.join(root, "warn-workspace-serial"),
+      target: { model: "target", provider: sharedInstallProvider },
+      judge: { model: "judge", provider: fixedJudgeProvider() },
+      concurrency: 1,
+      report: false,
+    });
+    assert.equal(
+      messages.filter((m) => m.includes("automatically serialized")).length,
+      0,
+      "no warning expected when concurrency is 1",
+    );
+
+    messages.length = 0;
+    await evaluateSkills({
+      root,
+      workspace: path.join(root, "warn-workspace-nocap"),
+      target: { model: "target", provider: fixedJudgeProvider() },
+      judge: { model: "judge", provider: fixedJudgeProvider() },
+      concurrency: 4,
+      report: false,
+    });
+    assert.equal(
+      messages.filter((m) => m.includes("automatically serialized")).length,
+      0,
+      "no warning expected when provider doesn't declare sharedInstallDir",
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
 test("strict loadSkill validates required agentskills.io frontmatter", () => {
   const root = tempRoot();
   const dir = path.join(root, "bad-name");

@@ -4,6 +4,14 @@ export interface ProviderCapabilities {
   attachments?: boolean;
   systemRole?: boolean;
   toolCalls?: boolean;
+  /**
+   * True when prepareSkill/cleanupSkill write to one fixed on-disk path
+   * shared across every call for the same skill name. Callers must
+   * serialize prepareSkill→complete→cleanupSkill per skill name across
+   * concurrent tasks, or concurrent installs/removals for the same skill
+   * will race (see OpencodeProvider/ClaudeCodeProvider skillInstallDir).
+   */
+  sharedInstallDir?: boolean;
 }
 
 export interface ToolFunctionDef {
