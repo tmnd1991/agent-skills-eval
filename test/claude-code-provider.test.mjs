@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -217,4 +226,61 @@ test("ClaudeCodeProvider.cleanupSkill: rejects a skill name that escapes the ski
 
   await assert.rejects(() => p.cleanupSkill(skill), /escapes skills directory/);
   assert.equal(existsSync(escapedDir), false);
+});
+
+test("ClaudeCodeProvider.prepareSkill: rejects a skill with a nested symlink escaping skill.dir (e.g. references/leak.md -> outside file)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = makeFakeSkill();
+  const outsideDir = mkdtempSync(path.join(tmpdir(), "claude-code-outside-"));
+  const secret = path.join(outsideDir, "id_rsa");
+  writeFileSync(secret, "super secret");
+  symlinkSync(secret, path.join(skill.dir, "references", "leak.md"));
+  const installDir = path.join(dir, ".claude", "skills", "my-skill");
+
+  await assert.rejects(p.prepareSkill(skill, "with_skill"), /escapes the skill directory/);
+  assert.equal(existsSync(path.join(installDir, "SKILL.md")), false);
+});
+
+test("ClaudeCodeProvider.prepareSkill: rejects a skill with a top-level symlink escaping skill.dir", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = makeFakeSkill();
+  const outsideDir = mkdtempSync(path.join(tmpdir(), "claude-code-outside-"));
+  const secret = path.join(outsideDir, "hosts");
+  writeFileSync(secret, "127.0.0.1 evil");
+  symlinkSync(secret, path.join(skill.dir, "evil.md"));
+  const installDir = path.join(dir, ".claude", "skills", "my-skill");
+
+  await assert.rejects(p.prepareSkill(skill, "with_skill"), /escapes the skill directory/);
+  assert.equal(existsSync(path.join(installDir, "SKILL.md")), false);
+});
+
+test("ClaudeCodeProvider.prepareSkill: rejects a skill with a dangling symlink", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = makeFakeSkill();
+  symlinkSync(path.join(skill.dir, "does-not-exist"), path.join(skill.dir, "dangling.md"));
+
+  await assert.rejects(p.prepareSkill(skill, "with_skill"), /unresolvable symlink/);
+});
+
+test("ClaudeCodeProvider.prepareSkill: rejects a skill with a symlink cycle instead of hanging", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = makeFakeSkill();
+  symlinkSync("loop", path.join(skill.dir, "loop"));
+
+  await assert.rejects(p.prepareSkill(skill, "with_skill"), /unresolvable symlink/);
+});
+
+test("ClaudeCodeProvider.prepareSkill: a symlink that stays inside skill.dir is not rejected (no false positive)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-code-dir-"));
+  const p = provider({ dir });
+  const skill = makeFakeSkill();
+  symlinkSync(path.join(skill.dir, "LICENSE"), path.join(skill.dir, "scripts", "helper-alias.sh"));
+  const installDir = path.join(dir, ".claude", "skills", "my-skill");
+
+  await p.prepareSkill(skill, "with_skill");
+  assert.ok(lstatSync(path.join(installDir, "scripts")).isSymbolicLink());
 });

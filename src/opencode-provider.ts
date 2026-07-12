@@ -346,6 +346,8 @@ export class OpencodeProvider implements Provider {
    * `mode` is `"with_skill"` — symlinks it into place so opencode's skill
    * tool finds it under `<dir>/.opencode/skills/<name>/`. Every entry in
    * `skill.dir` is linked except `evals/`, which holds the answer key.
+   * Throws if `skill.dir` contains, anywhere in its tree, a symlink that
+   * resolves outside `skill.dir` (see `assertNoEscapingSymlinks`).
    */
   async prepareSkill(skill: SkillSource, mode: "with_skill" | "without_skill"): Promise<void> {
     const installDir = this.skillInstallDir(skill.name);

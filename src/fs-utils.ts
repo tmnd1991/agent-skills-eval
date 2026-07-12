@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type { AttachedFile } from "./types.js";
 
@@ -24,6 +34,44 @@ export function isInsideDir(root: string, candidate: string): boolean {
 export function assertInside(root: string, candidate: string, label = "path"): void {
   if (!isInsideDir(root, candidate)) {
     throw new Error(`${label} escapes ${root}`);
+  }
+}
+
+/**
+ * Throws if any symlink anywhere under `dir` (recursively) resolves to a
+ * path outside `realRoot`. `realRoot` must already be `realpathSync`-resolved
+ * (callers should resolve `dir` once, up front — `isInsideDir`'s
+ * `path.resolve`-based comparison does not itself follow symlinks in the
+ * root, so comparing a realpath'd target against a non-realpath'd root can
+ * false-positive-reject legitimate files when `dir` sits under a symlinked
+ * path, e.g. macOS's `/tmp` -> `/private/tmp`).
+ *
+ * Skips the top-level `evals/` entry, matching `prepareSkill`'s existing
+ * behavior of never installing it.
+ */
+export function assertNoEscapingSymlinks(dir: string, realRoot: string, isRoot = true): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (isRoot && entry.name === "evals") continue;
+    const entryPath = path.join(dir, entry.name);
+
+    if (entry.isSymbolicLink()) {
+      let real: string;
+      try {
+        real = realpathSync(entryPath);
+      } catch (err) {
+        // Dangling target or symlink cycle (realpathSync throws ELOOP) —
+        // treat identically to an escape: we cannot prove containment.
+        throw new Error(`Skill contains an unresolvable symlink: ${entryPath} (${(err as Error).message})`);
+      }
+      if (!isInsideDir(realRoot, real)) {
+        throw new Error(`Skill contains a symlink that escapes the skill directory: ${entryPath} -> ${real}`);
+      }
+      continue; // don't descend further; containment of the target is already proven
+    }
+
+    if (entry.isDirectory()) {
+      assertNoEscapingSymlinks(entryPath, realRoot, false);
+    }
   }
 }
 
@@ -121,10 +169,13 @@ export function slugify(value: string, fallback = "item"): string {
 /**
  * Symlinks every entry of `skillDir` into `installDir` (creating `installDir`
  * first), except `evals/`, which holds the answer key. Caller is responsible
- * for clearing any previous install first (see `cleanupSkillInstall`).
+ * for clearing any previous install first (see `cleanupSkillInstall`). Throws
+ * if `skillDir` contains, anywhere in its tree, a symlink that resolves
+ * outside `skillDir` (see `assertNoEscapingSymlinks`).
  */
 export function installSkillSymlinks(skillDir: string, installDir: string): void {
   mkdirSync(installDir, { recursive: true });
+  assertNoEscapingSymlinks(skillDir, realpathSync(skillDir));
   for (const entry of readdirSync(skillDir, { withFileTypes: true })) {
     if (entry.name === "evals") continue;
     symlinkSync(
