@@ -37,6 +37,11 @@ export function createFakeOpencodeServer() {
   const sessions = new Map();
   let counter = 0;
   const nextId = (prefix) => `${prefix}_${++counter}`;
+  // Remaining scripted 500s for GET /session/status and GET /session/{id}/children,
+  // set via the returned `scriptPollFailures(endpoint, count)` helper — lets tests
+  // exercise OpencodeProvider.waitForIdle's handling of a failed poll response.
+  // Pass `Infinity` for a persistent failure.
+  const pollFailuresRemaining = { status: 0, children: 0 };
 
   function makeSession(parentID) {
     const id = nextId("ses");
@@ -334,12 +339,22 @@ export function createFakeOpencodeServer() {
 
       const childrenMatch = url.pathname.match(/^\/session\/([^/]+)\/children$/);
       if (req.method === "GET" && childrenMatch) {
+        if (pollFailuresRemaining.children > 0) {
+          pollFailuresRemaining.children -= 1;
+          respondJson(res, 500, { name: "UnknownError", data: { message: "fake children poll failure" } });
+          return;
+        }
         const children = [...sessions.values()].filter((s) => s.parentID === childrenMatch[1]);
         respondJson(res, 200, children);
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/session/status") {
+        if (pollFailuresRemaining.status > 0) {
+          pollFailuresRemaining.status -= 1;
+          respondJson(res, 500, { name: "UnknownError", data: { message: "fake status poll failure" } });
+          return;
+        }
         const statusById = {};
         for (const session of sessions.values()) statusById[session.id] = session.status;
         respondJson(res, 200, statusById);
@@ -365,6 +380,9 @@ export function createFakeOpencodeServer() {
         url: `http://127.0.0.1:${address.port}`,
         requests,
         sessions,
+        scriptPollFailures: (endpoint, count) => {
+          pollFailuresRemaining[endpoint] = count;
+        },
         close: () =>
           new Promise((done) => {
             for (const socket of sockets) socket.destroy();

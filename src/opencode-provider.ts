@@ -35,6 +35,8 @@ interface RunOutcome {
 }
 
 const POLL_INTERVAL_MS = 250;
+/** Consecutive session.status/session.children poll failures tolerated before giving up (see waitForIdle). */
+const MAX_POLL_ERROR_STREAK = 5;
 /** Grace period between SIGTERM and SIGKILL when tearing down our private opencode server. */
 const SERVER_KILL_GRACE_MS = 3000;
 /** How long to wait for `opencode serve` to print its listening URL before giving up. */
@@ -530,12 +532,28 @@ export class OpencodeProvider implements Provider {
     sessionId: string,
     deadline: number
   ): Promise<boolean> {
+    let errorStreak = 0;
     while (true) {
       const childrenResult = await client.session.children({ path: { id: sessionId }, signal: this.remainingSignal(deadline) });
-      const childIds = (childrenResult.data ?? []).map((session) => session.id);
       const statusResult = await client.session.status({ signal: this.remainingSignal(deadline) });
-      const statusById = statusResult.data ?? {};
 
+      if (childrenResult.error || statusResult.error) {
+        errorStreak++;
+        const message = describeError(childrenResult.error ?? statusResult.error);
+        process.stderr.write(
+          `warning: opencode session status/children poll failed (${errorStreak}/${MAX_POLL_ERROR_STREAK}), treating session as busy: ${message}\n`
+        );
+        if (errorStreak >= MAX_POLL_ERROR_STREAK) {
+          throw new Error(`opencode run: session status/children check failed ${errorStreak} times in a row: ${message}`);
+        }
+        if (Date.now() >= deadline) return false;
+        await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+        continue;
+      }
+      errorStreak = 0;
+
+      const childIds = childrenResult.data.map((session) => session.id);
+      const statusById = statusResult.data;
       const allIdle = [sessionId, ...childIds].every((id) => {
         const type = statusById[id]?.type ?? "idle";
         return type !== "busy" && type !== "retry";

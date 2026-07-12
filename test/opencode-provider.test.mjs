@@ -109,6 +109,34 @@ test("OpencodeProvider.complete: a hung prompt call resolves with a timeout erro
   }
 });
 
+test("OpencodeProvider.complete: a transient status/children poll failure self-heals — still waits for the real delegated child instead of treating the blip as idle", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    server.scriptPollFailures("status", 2);
+    const p = provider(server.url, { timeoutMs: 10_000, maxContinuations: 3 });
+    const result = await p.complete("__FAKE_OPENCODE_DELEGATE_RACE__");
+    assert.equal(result.error, undefined);
+    assert.equal(result.output, "FAKE_OPENCODE_REAL_ANSWER");
+  } finally {
+    await server.close();
+  }
+});
+
+test("OpencodeProvider.complete: a persistently failing status/children poll fails fast with a clear diagnostic instead of silently riding out the full timeout", async () => {
+  const server = await createFakeOpencodeServer();
+  try {
+    server.scriptPollFailures("children", Infinity);
+    const p = provider(server.url, { timeoutMs: 10_000 });
+    const started = Date.now();
+    const result = await p.complete("hello world");
+    const elapsed = Date.now() - started;
+    assert.match(result.error, /status\/children check failed \d+ times in a row/);
+    assert.ok(elapsed < 5000, `expected to fail fast instead of riding out the timeout, took ${elapsed}ms`);
+  } finally {
+    await server.close();
+  }
+});
+
 test("OpencodeProvider.complete: a subagent's async delegation does not truncate the run — waits for the real final answer", async () => {
   const server = await createFakeOpencodeServer();
   try {
