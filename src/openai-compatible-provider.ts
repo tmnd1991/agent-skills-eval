@@ -90,7 +90,7 @@ function parseToolCalls(raw: OpenAIToolCallWire[] | undefined): ToolCall[] | und
 }
 
 export class OpenAICompatibleProvider implements Provider {
-  readonly capabilities = { systemRole: true, attachments: false, toolCalls: true };
+  readonly capabilities = { systemRole: true, attachments: false, acceptsToolSchema: true, reportsToolCalls: true };
   /** Shown as `provider` in ProviderResult — pass the human name, e.g. "openai", "groq" */
   readonly name: string;
   readonly model: string;

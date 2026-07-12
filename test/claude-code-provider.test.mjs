@@ -12,14 +12,15 @@ function provider(options = {}) {
   return new ClaudeCodeProvider({ model: "fake-model", claudeBinary: FAKE_BINARY, ...options });
 }
 
-test("ClaudeCodeProvider capabilities: no attachments/systemRole/toolCalls/params, shared install dir", () => {
+test("ClaudeCodeProvider capabilities: no schema/systemRole/attachments, but reports tool calls, shared install dir", () => {
   const p = provider();
   assert.deepEqual(p.capabilities, {
     systemRole: false,
     attachments: false,
-    toolCalls: false,
+    acceptsToolSchema: false,
+    reportsToolCalls: true,
     sharedInstallDir: true,
-    params: false,
+    params: false
   });
 });
 

@@ -186,13 +186,13 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
 
   const concurrency = Math.max(1, args.concurrency ?? 4);
 
-  // Providers such as OpencodeProvider have no mapping between their own
-  // internal tool use and this SDK's tool_assertions feature, so those
-  // assertions always grade against an empty tool-call list. Warn once so
-  // failures aren't mistaken for model regressions (see README caveats).
+  // A provider that can't report which tools were actually called has no way
+  // to grade tool_assertions, so those assertions would always grade against
+  // an empty tool-call list. Warn once so failures aren't mistaken for model
+  // regressions.
   const supportsToolAssertions =
-    args.target.provider.capabilities?.toolCalls !== false &&
-    args.judge.provider.capabilities?.toolCalls !== false;
+    args.target.provider.capabilities?.reportsToolCalls !== false &&
+    args.judge.provider.capabilities?.reportsToolCalls !== false;
   let warnedToolAssertions = false;
 
   // prepareSkill/cleanupSkill are only ever invoked on the target provider
@@ -226,7 +226,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       skill.evals.some((e) => e.tool_assertions && e.tool_assertions.length > 0)
     ) {
       process.stderr.write(
-        "warning: tool_assertions are not supported by the current provider and will always grade against an empty tool-call list (e.g. --run-mode opencode or --run-mode claude-code) — see README \"opencode run mode\"/\"claude-code run mode\" caveats.\n"
+        "warning: tool_assertions are not supported by the current provider and will always grade against an empty tool-call list — this provider cannot report which tools were called.\n"
       );
       warnedToolAssertions = true;
     }

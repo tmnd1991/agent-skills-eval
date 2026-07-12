@@ -300,21 +300,24 @@ function isStalledOnDelegation(outcome: RunOutcome): boolean {
  * comparable to raw chat-completion counts from OpenAICompatibleProvider for
  * the same model; `auto: true` auto-approves opencode's own permission
  * prompts (bash/file-edit tools) unattended and is off by default;
- * capabilities are all false except `sharedInstallDir`, so callers always
- * merge system+user into one string before calling `complete()`. The
- * installed skill directory is shared across every call using the same
- * `dir`; evals of the same skill are automatically serialized by the runner
- * (see `sharedInstallDir` on `capabilities`) — evals of *different* skills
- * still race on unrelated shared state in `dir` (e.g. concurrent git
- * operations, or a skill that writes output files into `dir` itself).
+ * `systemRole`/`attachments`/`acceptsToolSchema` are all false, so callers
+ * always merge system+user into one string before calling `complete()`;
+ * `reportsToolCalls` is true, since opencode's session transcript reports the
+ * CLI's real tool calls. The installed skill directory is shared across
+ * every call using the same `dir`; evals of the same skill are automatically
+ * serialized by the runner (see `sharedInstallDir` on `capabilities`) —
+ * evals of *different* skills still race on unrelated shared state in `dir`
+ * (e.g. concurrent git operations, or a skill that writes output files into
+ * `dir` itself).
  */
 export class OpencodeProvider implements Provider {
   readonly capabilities = {
     systemRole: false,
     attachments: false,
-    toolCalls: false,
+    acceptsToolSchema: false,
+    reportsToolCalls: true,
     sharedInstallDir: true,
-    params: false,
+    params: false
   };
   readonly name: string;
   readonly model: string;

@@ -10,14 +10,15 @@ function provider(baseUrl, options = {}) {
   return new OpencodeProvider({ model: "fake/model", baseUrl, ...options });
 }
 
-test("OpencodeProvider capabilities: no attachments/systemRole/toolCalls/params, shared install dir", () => {
+test("OpencodeProvider capabilities: no schema/systemRole/attachments, but reports tool calls, shared install dir", () => {
   const p = provider("http://127.0.0.1:0");
   assert.deepEqual(p.capabilities, {
     systemRole: false,
     attachments: false,
-    toolCalls: false,
+    acceptsToolSchema: false,
+    reportsToolCalls: true,
     sharedInstallDir: true,
-    params: false,
+    params: false
   });
 });
 

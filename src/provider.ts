@@ -3,7 +3,25 @@ import type { AttachedFile } from "./types.js";
 export interface ProviderCapabilities {
   attachments?: boolean;
   systemRole?: boolean;
-  toolCalls?: boolean;
+  /**
+   * Whether `completeChat` accepts a caller-supplied `tools`/`toolChoice`
+   * schema in `CompleteChatArgs` and lets the model choose among exactly
+   * that set. False for providers whose agent CLI always uses its own
+   * built-in tool set (opencode, claude-code) and ignores/ has no way to
+   * accept an external schema.
+   */
+  acceptsToolSchema?: boolean;
+  /**
+   * Whether `ProviderResult.toolCalls` is populated with the tool calls the
+   * model/agent actually made, suitable for grading `tool_assertions`
+   * against. True for providers that parse tool calls out of a real
+   * transcript (chat-completion `tool_calls`, opencode session parts,
+   * claude-code NDJSON `tool_use` blocks) even when they don't accept an
+   * external schema. Only false for a provider that can't report tool
+   * calls at all — `tool_assertions` will always evaluate against an empty
+   * list for such a provider.
+   */
+  reportsToolCalls?: boolean;
   /**
    * True when prepareSkill/cleanupSkill write to one fixed on-disk path
    * shared across every call for the same skill name. Callers must

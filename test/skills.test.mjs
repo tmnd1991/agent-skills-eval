@@ -1092,3 +1092,52 @@ test("evaluateSkills warns when only target params or only judge params are drop
   );
   assert.equal(judgeOnlyWrites.filter((w) => PARAMS_WARNING.test(w)).length, 1);
 });
+
+function writeSkillWithToolAssertions(root, name = "tool-skill") {
+  const dir = path.join(root, name);
+  mkdirSync(path.join(dir, "evals"), { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: Skill with tool assertions.\n---\n\nBody.\n`);
+  writeFileSync(path.join(dir, "evals", "evals.json"), JSON.stringify({
+    skill_name: name,
+    evals: [{
+      id: 1,
+      name: "case",
+      prompt: "Do the thing.",
+      assertions: ["ok"],
+      tool_assertions: [{ type: "tool-not-called", name: "rm" }],
+    }],
+  }));
+  return dir;
+}
+
+test("evaluateSkills warns when the target provider cannot report tool calls", async () => {
+  const root = tempRoot();
+  writeSkillWithToolAssertions(root);
+  const nonReporting = provider("ok", { capabilities: { reportsToolCalls: false } });
+  const writes = await captureStderr(() =>
+    evaluateSkills({
+      root,
+      workspace: path.join(root, "workspace"),
+      target: { model: "target", provider: nonReporting },
+      judge: { model: "judge", provider: judgeProvider(true) },
+      report: false,
+    })
+  );
+  assert.ok(writes.some((w) => /tool_assertions are not supported/.test(w)));
+});
+
+test("evaluateSkills does not warn for opencode/claude-code-shaped capabilities (reportsToolCalls true, acceptsToolSchema false)", async () => {
+  const root = tempRoot();
+  writeSkillWithToolAssertions(root);
+  const reportingNoSchema = provider("ok", { capabilities: { acceptsToolSchema: false, reportsToolCalls: true } });
+  const writes = await captureStderr(() =>
+    evaluateSkills({
+      root,
+      workspace: path.join(root, "workspace"),
+      target: { model: "target", provider: reportingNoSchema },
+      judge: { model: "judge", provider: judgeProvider(true) },
+      report: false,
+    })
+  );
+  assert.equal(writes.length, 0);
+});
