@@ -97,6 +97,35 @@ export interface BenchmarkJson {
   };
 }
 
+// ─── on-disk artifact shapes ──────────────────────────────────────────────────
+// Written by `artifacts.ts`/`evaluate-skills.ts`, read by `report.ts`. Kept
+// here alongside the other shared value types so writer and reader can't
+// silently drift.
+
+export interface TimingJson {
+  total_tokens: number;
+  duration_ms: number;
+}
+
+export interface RunPromptsJson {
+  system?: string;
+  user: string;
+  judgePrompt?: string;
+  fileCount: number;
+  tools?: ToolDef[];
+  tool_choice?: ToolChoice;
+}
+
+export interface SkillMetaJson {
+  name: string;
+  slug: string;
+  relPath: string;
+  target?: string;
+  judge?: string;
+  modes?: RunMode[];
+  generated_at?: string;
+}
+
 // ─── progress events ──────────────────────────────────────────────────────────
 // Emitted by evaluateSkills / runEval as a typed event stream so callers can
 // build their own UI. The bundled `consoleReporter` is the default consumer.

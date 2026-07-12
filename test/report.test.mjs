@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { generateReport } from "../dist/index.js";
+import { evaluateSkills, generateReport } from "../dist/index.js";
 
 function tempRoot() {
   return mkdtempSync(path.join(tmpdir(), "agent-skills-eval-report-"));
@@ -93,4 +93,62 @@ test("generateReport omits the token-overhead caveat when there is no baseline d
 
   assert.doesNotMatch(html, /<div class="caveat">/);
   assert.doesNotMatch(html, /<span class="caveat-flag"/);
+});
+
+function writeSkill(root, name = "csv-analyzer") {
+  const dir = path.join(root, name);
+  mkdirSync(path.join(dir, "evals"), { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: Analyze CSV files.\n---\n\nBody.\n`);
+  writeFileSync(path.join(dir, "evals", "evals.json"), JSON.stringify({
+    skill_name: name,
+    evals: [{
+      id: 1,
+      name: "top-months",
+      prompt: "Find top revenue months.",
+      assertions: ["The output mentions top revenue months."],
+    }],
+  }));
+  return dir;
+}
+
+function provider(output) {
+  return {
+    name: "mock",
+    model: "mock-model",
+    async complete() {
+      return { provider: "mock", model: "mock-model", output, latencyMs: 25, inputTokens: 3, outputTokens: 4, costUsd: 0 };
+    },
+  };
+}
+
+function judgeProvider(passed = true) {
+  return provider(JSON.stringify({
+    assertion_results: [{ text: "placeholder", passed, evidence: "ok" }],
+    summary: { passed: passed ? 1 : 0, failed: passed ? 0 : 1, total: 1, pass_rate: passed ? 1 : 0 },
+  }));
+}
+
+test("generateReport renders a run's response.txt output — guards writer/reader artifact-path drift", async () => {
+  const root = tempRoot();
+  writeSkill(root);
+  const workspace = path.join(root, "workspace");
+  const targetOutput = "Top revenue months: Jan (unique-marker-xyz)";
+
+  await evaluateSkills({
+    root,
+    workspace,
+    target: { model: "target", provider: provider(targetOutput) },
+    judge: { model: "judge", provider: judgeProvider(true) },
+    report: false,
+  });
+
+  const result = generateReport({ workspace });
+  assert.equal(result.skills, 1);
+  assert.equal(result.evals, 1);
+
+  const html = readFileSync(result.reportPath, "utf-8");
+  assert.ok(
+    html.includes(targetOutput),
+    "report HTML should contain the run's response.txt output text",
+  );
 });

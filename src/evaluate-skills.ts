@@ -7,14 +7,16 @@ import {
   buildBenchmark,
   ensureSkillWorkspaceDir,
   snapshotSkillToHistory,
+  writeBenchmark,
 } from "./artifacts.js";
+import { benchmarkJsonPath, metaJsonPath } from "./artifact-layout.js";
 import { consoleReporter } from "./console-reporter.js";
 import { discoverSkills, type SkillRef } from "./discover.js";
 import { generateReport } from "./report.js";
 import { evalSlug, runEval, type RunMode } from "./run-eval.js";
 import { loadSkill } from "./skill.js";
 import { slugify } from "./fs-utils.js";
-import type { AgentSkillsEval, Skill, SkillsEvent } from "./types.js";
+import type { AgentSkillsEval, Skill, SkillMetaJson, SkillsEvent } from "./types.js";
 
 export interface EvaluateSkillsArgs {
   root: string;
@@ -268,23 +270,16 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
         : refs.length === 1
           ? prepareIterationSkillDir(runWorkspace.dir)
           : prepareIterationSkillDir(path.join(runWorkspace.dir, slug));
-    writeFileSync(
-      path.join(skillDir, "meta.json"),
-      `${JSON.stringify(
-        {
-          name: skill.name,
-          slug,
-          relPath: ref.relPath,
-          target: args.target.model,
-          judge: args.judge.model,
-          modes,
-          generated_at: new Date().toISOString(),
-        },
-        null,
-        2
-      )}\n`,
-      "utf-8"
-    );
+    const meta: SkillMetaJson = {
+      name: skill.name,
+      slug,
+      relPath: ref.relPath,
+      target: args.target.model,
+      judge: args.judge.model,
+      modes,
+      generated_at: new Date().toISOString(),
+    };
+    writeFileSync(metaJsonPath(skillDir), `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
 
     emit?.({
       type: "suite-start",
@@ -310,8 +305,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
     if (p.skill.evals.length === 0) {
       // No evals — finalize immediately so we still emit a benchmark + suite-end.
       const benchmark = buildBenchmark([]);
-      const benchmarkPath = path.join(p.skillDir, "benchmark.json");
-      writeFileSync(benchmarkPath, `${JSON.stringify(benchmark, null, 2)}\n`, "utf-8");
+      const benchmarkPath = writeBenchmark(p.skillDir, benchmark);
       emit?.({ type: "suite-end", skill: p.skill.name, benchmarkPath, benchmark });
       continue;
     }
@@ -382,8 +376,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       p.completed++;
       if (p.completed === p.skill.evals.length) {
         const benchmark = buildBenchmark(p.aggregateRuns);
-        const benchmarkPath = path.join(p.skillDir, "benchmark.json");
-        writeFileSync(benchmarkPath, `${JSON.stringify(benchmark, null, 2)}\n`, "utf-8");
+        const benchmarkPath = writeBenchmark(p.skillDir, benchmark);
         emit?.({
           type: "suite-end",
           skill: p.skill.name,
@@ -416,7 +409,7 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
       relPath: p.ref.relPath,
       evals: p.skill.evals.length,
       passRate: total === 0 ? null : p.passed / total,
-      benchmarkPath: path.join(p.skillDir, "benchmark.json"),
+      benchmarkPath: benchmarkJsonPath(p.skillDir),
       errored: p.errored,
     });
     writtenSkillDirs.push({ slug: p.slug, dir: p.skillDir });

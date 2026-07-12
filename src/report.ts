@@ -24,7 +24,19 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { BenchmarkJson, GradingJson, ToolCall } from "./types.js";
+import type { BenchmarkJson, GradingJson, RunPromptsJson, SkillMetaJson, TimingJson, ToolCall } from "./types.js";
+import {
+  benchmarkJsonPath,
+  gradingJsonPath,
+  isEvalDirName,
+  metaJsonPath,
+  promptsJsonPath,
+  responseTxtPath,
+  RUN_MODES,
+  runDirFor,
+  timingJsonPath,
+  toolCallsJsonPath,
+} from "./artifact-layout.js";
 
 export interface GenerateReportArgs {
   /** Workspace directory that contains per-skill subfolders. */
@@ -47,34 +59,12 @@ export interface GenerateReportResult {
   evals: number;
 }
 
-interface RunPromptsFile {
-  system?: string;
-  user: string;
-  judgePrompt?: string;
-  fileCount: number;
-}
-
-interface TimingFile {
-  total_tokens: number;
-  duration_ms: number;
-}
-
-interface SkillMeta {
-  name: string;
-  slug: string;
-  relPath: string;
-  target?: string;
-  judge?: string;
-  modes?: string[];
-  generated_at?: string;
-}
-
 interface ReportRunOk {
   mode: "with_skill" | "without_skill";
   output: string;
   grading: GradingJson;
-  timing: TimingFile;
-  prompts?: RunPromptsFile;
+  timing: TimingJson;
+  prompts?: RunPromptsJson;
   toolCalls?: ToolCall[];
   error?: undefined;
 }
@@ -97,7 +87,7 @@ interface ReportEval {
 }
 
 interface ReportSkill {
-  meta: SkillMeta;
+  meta: SkillMetaJson;
   benchmark?: BenchmarkJson;
   evals: ReportEval[];
   totals: {
@@ -134,20 +124,20 @@ function readText(filePath: string): string {
 }
 
 function isSkillDir(dir: string): boolean {
-  return existsSync(path.join(dir, "meta.json")) || existsSync(path.join(dir, "benchmark.json"));
+  return existsSync(metaJsonPath(dir)) || existsSync(benchmarkJsonPath(dir));
 }
 
 function collectSkill(skillDir: string): ReportSkill | undefined {
   if (!statSync(skillDir).isDirectory()) return undefined;
-  const meta = readJson<SkillMeta>(path.join(skillDir, "meta.json")) ?? {
+  const meta = readJson<SkillMetaJson>(metaJsonPath(skillDir)) ?? {
     name: path.basename(skillDir),
     slug: path.basename(skillDir),
     relPath: skillDir,
   };
-  const benchmark = readJson<BenchmarkJson>(path.join(skillDir, "benchmark.json"));
+  const benchmark = readJson<BenchmarkJson>(benchmarkJsonPath(skillDir));
 
   const entries = readdirSync(skillDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith("eval-"))
+    .filter((entry) => entry.isDirectory() && isEvalDirName(entry.name))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const evals: ReportEval[] = [];
@@ -165,8 +155,8 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
     const evalDir = path.join(skillDir, entry.name);
     const modes: ReportRun[] = [];
 
-    for (const mode of ["with_skill", "without_skill"] as const) {
-      const runDir = path.join(evalDir, mode);
+    for (const mode of RUN_MODES) {
+      const runDir = runDirFor(evalDir, mode);
       if (!existsSync(runDir)) continue;
       const errorFile = readJson<{ error: string }>(path.join(runDir, "error.json"));
       if (errorFile) {
@@ -174,14 +164,12 @@ function collectSkill(skillDir: string): ReportSkill | undefined {
         if (mode === "with_skill") errored += 1;
         continue;
       }
-      const grading = readJson<GradingJson>(path.join(runDir, "grading.json"));
-      const timing = readJson<TimingFile>(path.join(runDir, "timing.json"));
+      const grading = readJson<GradingJson>(gradingJsonPath(runDir));
+      const timing = readJson<TimingJson>(timingJsonPath(runDir));
       if (!grading || !timing) continue;
-      const prompts = readJson<RunPromptsFile>(path.join(runDir, "prompts.json"));
-      const toolCalls = readJson<ToolCall[]>(path.join(runDir, "tool_calls.json"));
-      const output =
-        readText(path.join(runDir, "outputs", "raw_output.txt")) ||
-        readText(path.join(runDir, "outputs", "response.txt"));
+      const prompts = readJson<RunPromptsJson>(promptsJsonPath(runDir));
+      const toolCalls = readJson<ToolCall[]>(toolCallsJsonPath(runDir));
+      const output = readText(responseTxtPath(runDir));
       modes.push({ mode, output, grading, timing, prompts, toolCalls });
 
       if (mode === "with_skill") {

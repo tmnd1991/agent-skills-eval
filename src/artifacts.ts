@@ -5,31 +5,29 @@ import type {
   BenchmarkJson,
   GradingJson,
   RunMode,
+  RunPromptsJson,
+  TimingJson,
   ToolCall,
-  ToolChoice,
-  ToolDef,
 } from "./types.js";
 import { assertInside, ensureDir, writeFileInside } from "./fs-utils.js";
+import {
+  gradingJsonPath,
+  outputsDirPath,
+  promptsJsonPath,
+  responseTxtPath,
+  timingJsonPath,
+  toolCallsJsonPath,
+  benchmarkJsonPath,
+} from "./artifact-layout.js";
 
 /**
  * Promptset persisted alongside the spec-mandated grading.json + timing.json.
  * Captures what the model under test and the judge actually saw — essential
- * for debugging and for report rendering.
+ * for debugging and for report rendering. Re-exported under its historical
+ * name so the public API (`index.ts`) is unaffected by the shape moving to
+ * `types.ts`.
  */
-export interface RunPrompts {
-  /** System message sent to the target model (only set in `with_skill`). */
-  system?: string;
-  /** User message sent to the target model. */
-  user: string;
-  /** Final prompt sent to the rubric judge for grading. */
-  judgePrompt?: string;
-  /** Number of attached eval files. */
-  fileCount: number;
-  /** Function tools sent with the request, if any. */
-  tools?: ToolDef[];
-  /** Tool selection control sent with the request. */
-  tool_choice?: ToolChoice;
-}
+export type { RunPromptsJson as RunPrompts } from "./types.js";
 
 export interface RunStats {
   mode: RunMode;
@@ -40,24 +38,24 @@ export interface RunStats {
 
 export function writeRunArtifacts(
   runDir: string,
-  timing: { total_tokens: number; duration_ms: number },
+  timing: TimingJson,
   grading: GradingJson,
   rawOutput: string,
   outputFiles: { path: string; content: string | Buffer }[] = [],
-  prompts?: RunPrompts,
+  prompts?: RunPromptsJson,
   toolCalls?: ToolCall[]
 ): void {
-  const outputDir = path.join(runDir, "outputs");
+  const outputDir = outputsDirPath(runDir);
   ensureDir(outputDir);
-  writeFileSync(path.join(runDir, "timing.json"), `${JSON.stringify(timing, null, 2)}\n`, "utf-8");
-  writeFileSync(path.join(runDir, "grading.json"), `${JSON.stringify(grading, null, 2)}\n`, "utf-8");
-  writeFileSync(path.join(outputDir, "response.txt"), rawOutput, "utf-8");
+  writeFileSync(timingJsonPath(runDir), `${JSON.stringify(timing, null, 2)}\n`, "utf-8");
+  writeFileSync(gradingJsonPath(runDir), `${JSON.stringify(grading, null, 2)}\n`, "utf-8");
+  writeFileSync(responseTxtPath(runDir), rawOutput, "utf-8");
   if (prompts) {
-    writeFileSync(path.join(runDir, "prompts.json"), `${JSON.stringify(prompts, null, 2)}\n`, "utf-8");
+    writeFileSync(promptsJsonPath(runDir), `${JSON.stringify(prompts, null, 2)}\n`, "utf-8");
   }
   if (toolCalls && toolCalls.length > 0) {
     writeFileSync(
-      path.join(runDir, "tool_calls.json"),
+      toolCallsJsonPath(runDir),
       `${JSON.stringify(toolCalls, null, 2)}\n`,
       "utf-8"
     );
@@ -131,7 +129,7 @@ export function buildBenchmark(runs: RunStats[]): BenchmarkJson {
 
 export function writeBenchmark(skillIterationDir: string, benchmark: BenchmarkJson): string {
   ensureDir(skillIterationDir);
-  const benchmarkPath = path.join(skillIterationDir, "benchmark.json");
+  const benchmarkPath = benchmarkJsonPath(skillIterationDir);
   writeFileSync(benchmarkPath, `${JSON.stringify(benchmark, null, 2)}\n`, "utf-8");
   return benchmarkPath;
 }
