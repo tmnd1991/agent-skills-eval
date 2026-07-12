@@ -453,9 +453,11 @@ The static HTML report is built from disk artifacts and shows everything you'd w
 - Pass rate by skill and by eval
 - Assertion-by-assertion grading evidence with judge reasoning
 - Full target output, side by side for `with_skill` and `without_skill`
+- Side-by-side/stacked layout toggle for comparing runs
 - Prompt and judge prompt details
 - Timing and token usage
 - Tool calls when present
+- Skill-invocation badge (`skill picked up` / `skill not picked up`) on `with_skill` runs when tool-call data is captured
 
 Use `--report-output` (or `report.output` in YAML) to choose where the report lands.
 
