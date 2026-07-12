@@ -516,7 +516,7 @@ function renderEval(ev: ReportEval, skillName: string, skillSlug: string): strin
   `;
 }
 
-function renderSkillSection(skill: ReportSkill): string {
+function renderSkillSection(skill: ReportSkill, tokenCaveat: boolean): string {
   const t = skill.totals;
   const benchmarkBlock = skill.benchmark?.run_summary.delta
     ? (() => {
@@ -524,7 +524,10 @@ function renderSkillSection(skill: ReportSkill): string {
         const sign = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
         const ppDelta = d.pass_rate * 100;
         const cls = ppDelta > 0 ? "ok" : ppDelta < 0 ? "bad" : "muted";
-        return `<div class="delta ${cls}">Δ vs baseline: pass-rate ${sign(ppDelta)}pp · time ${sign(d.time_seconds)}s · tokens ${sign(d.tokens)}</div>`;
+        const caveatFlag = tokenCaveat
+          ? ` <span class="caveat-flag" title="Token figure includes this run mode's own CLI overhead — not directly comparable across providers.">†</span>`
+          : "";
+        return `<div class="delta ${cls}">Δ vs baseline: pass-rate ${sign(ppDelta)}pp · time ${sign(d.time_seconds)}s · tokens ${sign(d.tokens)}${caveatFlag}</div>`;
       })()
     : "";
   return `
@@ -606,6 +609,8 @@ const STYLES = `
   article.skill .delta { margin-top: 8px; font-size: 13px; }
   article.skill .delta.ok { color: var(--ok); }
   article.skill .delta.bad { color: var(--bad); }
+  .caveat { margin-top: 6px; padding: 6px 10px; border-radius: 4px; background: var(--warn-bg); color: var(--warn); font-size: 13px; }
+  .caveat-flag { cursor: help; color: var(--warn); }
   details.eval { border: 1px solid var(--border); border-radius: 6px; margin-top: 12px; }
   details.eval > summary { padding: 10px 14px; cursor: pointer; display: flex; gap: 10px; align-items: center; }
   details.eval[open] > summary { border-bottom: 1px solid var(--border); }
@@ -671,9 +676,15 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
   const overallWithoutRate = totalWithoutTotal === 0 ? null : totalWithoutPassed / totalWithoutTotal;
   const generatedAt = new Date();
 
+  // CLI-wrapper run modes fold their own overhead into token counts, so the
+  // Δ vs baseline "tokens" figure isn't directly comparable to --run-mode api
+  // runs. Surface that once here and thread it into the per-skill delta.
+  const overheadProviders = new Set(["opencode", "claude-code"]);
+  const tokenCaveat = hasBaseline && args.provider !== undefined && overheadProviders.has(args.provider);
+
   const title = args.title ?? "Agent Skills Eval report";
   const summaryRows = skills.map(renderSkillRow).join("\n");
-  const detailSections = skills.map(renderSkillSection).join("\n");
+  const detailSections = skills.map((skill) => renderSkillSection(skill, tokenCaveat)).join("\n");
 
   const body =
     skills.length === 0
@@ -715,6 +726,7 @@ export function generateReport(args: GenerateReportArgs): GenerateReportResult {
       ${args.provider ? `· provider <code>${escapeHtml(args.provider)}</code>` : ""}
       ${args.target ? `· target <code>${escapeHtml(args.target)}</code>` : ""}
       ${args.judge ? `· judge <code>${escapeHtml(args.judge)}</code>` : ""}
+      ${tokenCaveat ? `<div class="caveat">⚠ Token deltas below include <code>${escapeHtml(args.provider!)}</code>'s own CLI overhead and aren't directly comparable to <code>--run-mode api</code> runs — see README caveats.</div>` : ""}
     </div>
     <div class="totals">
       <div class="stat"><span class="label">skills</span><span class="value">${skills.length}</span></div>

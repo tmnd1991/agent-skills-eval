@@ -175,6 +175,77 @@ test("evaluateSkills produces spec workspace layout and summary", async () => {
   assert.ok(existsSync(path.join(workspace, "csv-analyzer", "eval-top-months", "with_skill", "outputs")));
 });
 
+test("evaluateSkills warns once when a baseline run uses an overhead-prone provider", async () => {
+  const root = tempRoot();
+  writeSkill(root);
+  const workspace = path.join(root, "bench-workspace");
+
+  const written = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    written.push(chunk.toString());
+    return true;
+  };
+  try {
+    await evaluateSkills({
+      root,
+      workspace,
+      baseline: true,
+      report: false,
+      target: { model: "target", provider: provider("Top revenue months: Jan", { name: "opencode" }) },
+      judge: { model: "judge", provider: judgeProvider(true) },
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.ok(
+    written.some((line) => /token totals from --run-mode opencode/.test(line)),
+    "expected a stderr warning about opencode token overhead",
+  );
+});
+
+test("evaluateSkills does not warn about token overhead for a plain provider or without baseline", async () => {
+  const root = tempRoot();
+  writeSkill(root);
+
+  const written = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    written.push(chunk.toString());
+    return true;
+  };
+  try {
+    // Overhead-prone provider, but no baseline: no delta is ever computed, so
+    // nothing to warn about.
+    await evaluateSkills({
+      root,
+      workspace: path.join(root, "workspace-no-baseline"),
+      baseline: false,
+      report: false,
+      target: { model: "target", provider: provider("Top revenue months: Jan", { name: "opencode" }) },
+      judge: { model: "judge", provider: judgeProvider(true) },
+    });
+
+    // Baseline, but a plain (non-overhead) provider.
+    await evaluateSkills({
+      root,
+      workspace: path.join(root, "workspace-plain-provider"),
+      baseline: true,
+      report: false,
+      target: { model: "target", provider: provider("Top revenue months: Jan") },
+      judge: { model: "judge", provider: judgeProvider(true) },
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.ok(
+    !written.some((line) => /token totals from --run-mode/.test(line)),
+    "did not expect a token-overhead warning",
+  );
+});
+
 test("loadSkill normalizes mixed-shape assertions to strings", () => {
   const root = tempRoot();
   const name = "mixed-assertions";

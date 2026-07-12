@@ -212,6 +212,22 @@ export async function evaluateSkills(args: EvaluateSkillsArgs): Promise<Evaluate
   const supportsTargetParams = args.target.provider.capabilities?.params !== false;
   const supportsJudgeParams = args.judge.provider.capabilities?.params !== false;
   let warnedParams = false;
+  // CLI-wrapper providers (opencode, claude-code) fold their own system-prompt/
+  // tool-schema overhead into the token counts they report, so the Δ vs
+  // baseline "tokens" figure isn't apples-to-apples with --run-mode api. Warn
+  // once so the report's token delta isn't mistaken for pure skill overhead
+  // (see README caveats).
+  const overheadProviders = new Set(["opencode", "claude-code"]);
+  const overheadProviderName = overheadProviders.has(args.target.provider.name)
+    ? args.target.provider.name
+    : overheadProviders.has(args.judge.provider.name)
+      ? args.judge.provider.name
+      : undefined;
+  if (args.baseline && overheadProviderName) {
+    process.stderr.write(
+      `warning: token totals from --run-mode ${overheadProviderName} include that CLI's own system-prompt/tool-schema overhead and aren't apples-to-apples with --run-mode api; the Δ vs baseline "tokens" figure in the HTML report and end-of-run summary reflects that overhead too, not just the skill's own usage — see README "opencode run mode"/"claude-code run mode" caveats.\n`
+    );
+  }
 
   // ─── Phase 1: sequential discovery prep ───────────────────────────────────
   // Allocate skillDir + write meta.json + emit suite-start in discovery order
