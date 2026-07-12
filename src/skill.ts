@@ -10,7 +10,14 @@ import type {
   ToolChoice,
   ToolDef,
 } from "./types.js";
-import { SKILL_NAME_PATTERN, assertSafeSkillName, isInsideDir, pathToPosix, readAttachedFile } from "./fs-utils.js";
+import {
+  SKILL_NAME_PATTERN,
+  assertSafeSkillName,
+  isInsideDir,
+  pathToPosix,
+  readAttachedFile,
+  walkFiles,
+} from "./fs-utils.js";
 export type { AgentSkillsEval, AttachedFile, Skill } from "./types.js";
 
 interface SkillFrontmatter {
@@ -111,27 +118,13 @@ function validateSkillFrontmatter(dir: string, frontmatter: SkillFrontmatter, ha
   }
 }
 
-function walkFiles(root: string, predicate: (filePath: string) => boolean): string[] {
-  if (!existsSync(root)) return [];
-  const out: string[] = [];
-  const visit = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        visit(fullPath);
-      } else if (entry.isFile() && predicate(fullPath)) {
-        out.push(fullPath);
-      }
-    }
-  };
-  visit(root);
-  return out.sort((a, b) => pathToPosix(path.relative(root, a)).localeCompare(pathToPosix(path.relative(root, b))));
-}
-
 function readReferences(skillDir: string, maxFileBytes: number): AttachedFile[] {
   const referencesDir = path.join(skillDir, "references");
-  return walkFiles(referencesDir, (filePath) => REFERENCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()))
-    .map((filePath) => readAttachedFile(skillDir, path.relative(skillDir, filePath), maxFileBytes));
+  return walkFiles(
+    referencesDir,
+    (filePath) => REFERENCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()),
+    (a, b) => pathToPosix(path.relative(referencesDir, a)).localeCompare(pathToPosix(path.relative(referencesDir, b)))
+  ).map((filePath) => readAttachedFile(skillDir, path.relative(skillDir, filePath), maxFileBytes));
 }
 
 function readScripts(skillDir: string, maxFileBytes: number, includeScriptBodies: boolean): AttachedFile[] {

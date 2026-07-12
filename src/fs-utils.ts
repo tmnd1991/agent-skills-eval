@@ -191,7 +191,11 @@ export function cleanupSkillInstall(installDir: string): void {
   rmSync(installDir, { recursive: true, force: true });
 }
 
-export function walkFiles(root: string, predicate: (absolutePath: string) => boolean): string[] {
+export function walkFiles(
+  root: string,
+  predicate: (absolutePath: string) => boolean,
+  compare: (a: string, b: string) => number = (a, b) => a.localeCompare(b)
+): string[] {
   if (!existsSync(root)) return [];
   const out: string[] = [];
   const visit = (dir: string) => {
@@ -205,5 +209,5 @@ export function walkFiles(root: string, predicate: (absolutePath: string) => boo
     }
   };
   visit(root);
-  return out.sort((a, b) => a.localeCompare(b));
+  return out.sort(compare);
 }

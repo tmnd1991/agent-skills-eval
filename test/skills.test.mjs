@@ -89,6 +89,19 @@ test("loadSkill reads spec files and safe attachment states", () => {
   assert.equal(skill.evals.length, 1);
 });
 
+test("loadSkill sorts nested references by POSIX-relative path", () => {
+  const root = tempRoot();
+  const dir = writeSkill(root);
+  mkdirSync(path.join(dir, "references", "z"), { recursive: true });
+  writeFileSync(path.join(dir, "references", "z", "b.md"), "b");
+  writeFileSync(path.join(dir, "references", "m.mdx"), "m");
+  const skill = loadSkill(dir);
+  assert.deepEqual(
+    skill.references.map((f) => f.path),
+    ["references/m.mdx", "references/REFERENCE.md", "references/z/b.md"]
+  );
+});
+
 test("discoverSkills finds nested skills and plugin names", () => {
   const root = tempRoot();
   const plugin = path.join(root, "domain", "plugin");

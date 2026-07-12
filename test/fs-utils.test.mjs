@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { cleanupSkillInstall, installSkillSymlinks } from "../dist/fs-utils.js";
+import { cleanupSkillInstall, installSkillSymlinks, walkFiles } from "../dist/fs-utils.js";
+
+function tempRoot() {
+  return mkdtempSync(path.join(tmpdir(), "agent-skills-eval-fs-utils-"));
+}
 
 function makeFakeSkillDir() {
   const skillDir = mkdtempSync(path.join(tmpdir(), "fs-utils-skill-"));
@@ -64,4 +68,31 @@ test("installSkillSymlinks: does not clear a stale prior install on its own — 
 
   assert.ok(existsSync(path.join(installDir, "stale.txt")), "stale entry should still be present");
   assert.ok(lstatSync(path.join(installDir, "SKILL.md")).isSymbolicLink());
+});
+
+test("walkFiles returns [] when root does not exist", () => {
+  const root = path.join(tempRoot(), "missing");
+  assert.deepEqual(walkFiles(root, () => true), []);
+});
+
+test("walkFiles defaults to absolute-path sort", () => {
+  const root = tempRoot();
+  mkdirSync(path.join(root, "b"), { recursive: true });
+  writeFileSync(path.join(root, "b", "1.txt"), "1");
+  writeFileSync(path.join(root, "a.txt"), "a");
+  const results = walkFiles(root, (p) => p.endsWith(".txt"));
+  assert.deepEqual(results, [...results].sort((a, b) => a.localeCompare(b)));
+  assert.equal(results.length, 2);
+});
+
+test("walkFiles accepts a custom comparator", () => {
+  const root = tempRoot();
+  writeFileSync(path.join(root, "a.txt"), "a");
+  writeFileSync(path.join(root, "b.txt"), "b");
+  const results = walkFiles(
+    root,
+    (p) => p.endsWith(".txt"),
+    (a, b) => b.localeCompare(a)
+  );
+  assert.deepEqual(results.map((p) => path.basename(p)), ["b.txt", "a.txt"]);
 });
