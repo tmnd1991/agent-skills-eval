@@ -102,15 +102,13 @@ test("loadSkill sorts nested references by POSIX-relative path", () => {
   );
 });
 
-test("discoverSkills finds nested skills and plugin names", () => {
+test("discoverSkills finds nested skills", () => {
   const root = tempRoot();
   const plugin = path.join(root, "domain", "plugin");
-  mkdirSync(path.join(plugin, ".claude-plugin"), { recursive: true });
-  writeFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "demo-plugin" }));
   writeSkill(path.join(plugin, "skills"), "csv-analyzer");
   const refs = discoverSkills(root);
   assert.equal(refs.length, 1);
-  assert.equal(refs[0].pluginName, "demo-plugin");
+  assert.equal("pluginName" in refs[0], false);
   assert.equal(refs[0].hasEvals, true);
 });
 

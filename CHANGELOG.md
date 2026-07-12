@@ -46,6 +46,11 @@ All notable changes to this project are documented here.
 - Fix the HTML report, skill summary sort order, and regression detection to treat a
   zero-assertion run as a distinct "no assertions" state instead of a false 100%/green
   result.
+- Remove the unused `pluginName` field from `SkillRef` and the discovery-time
+  `.claude-plugin/plugin.json` lookup that populated it. No shipped feature
+  consumed this field; removing it also drops a per-skill filesystem walk on
+  every `discoverSkills()` call. Breaking change for TypeScript consumers that
+  reference `SkillRef["pluginName"]`.
 
 ## 0.1.1
 

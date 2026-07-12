@@ -1,12 +1,11 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { load } from "js-yaml";
-import { normalizePosix, safeReadJson } from "./fs-utils.js";
+import { normalizePosix } from "./fs-utils.js";
 
 export interface SkillRef {
   name: string;
   dir: string;
-  pluginName?: string;
   relPath: string;
 }
 
@@ -24,22 +23,6 @@ function globToRegExp(pattern: string): RegExp {
 function matchesAny(relPath: string, patterns: string[] | undefined): boolean {
   if (!patterns || patterns.length === 0) return false;
   return patterns.some((pattern) => globToRegExp(normalizePosix(pattern)).test(relPath));
-}
-
-function nearestPluginName(dir: string, root: string): string | undefined {
-  let current = dir;
-  while (current.startsWith(root)) {
-    const pluginPath = path.join(current, ".claude-plugin", "plugin.json");
-    const plugin = safeReadJson(pluginPath);
-    if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
-      const name = (plugin as Record<string, unknown>).name;
-      if (typeof name === "string" && name.trim()) return name.trim();
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return undefined;
 }
 
 function readSkillName(skillPath: string, fallback: string): string {
@@ -77,7 +60,6 @@ export function discoverSkills(
         results.push({
           name: readSkillName(skillPath, basename),
           dir,
-          pluginName: nearestPluginName(dir, discoveryRoot),
           relPath: normalizedRel,
           hasEvals: existsSync(path.join(dir, "evals", "evals.json")),
         });
