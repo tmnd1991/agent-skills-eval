@@ -171,7 +171,7 @@ export function createFakeOpencodeServer() {
         session.scenario = "no-text";
       } else if (text.includes("__FAKE_OPENCODE_SKILL_TOOL__")) {
         session.scenario = "skill-tool";
-      } else if (/Assertions:\n[\s\S]*?\nModel output:/.test(text)) {
+      } else if (/<untrusted_assertions-([0-9a-f-]+)>\n[\s\S]*?<\/untrusted_assertions-\1>/.test(text)) {
         session.scenario = "judge";
       } else {
         session.scenario = "default";
@@ -194,10 +194,14 @@ export function createFakeOpencodeServer() {
         return;
       }
       case "judge": {
-        const match = text.match(/Assertions:\n([\s\S]*?)\nModel output:/);
+        // Assertions are wrapped in a nonce'd <untrusted_assertions-{nonce}>
+        // boundary tag (see grade.ts's renderRubricPrompt); match it with a
+        // backreference so only the true (same-nonce) closing tag ends the
+        // capture, not any forged tag a malicious assertion might contain.
+        const match = text.match(/<untrusted_assertions-([0-9a-f-]+)>\n([\s\S]*?)\n<\/untrusted_assertions-\1>/);
         let assertions = [];
         try {
-          assertions = match ? JSON.parse(match[1]) : [];
+          assertions = match ? JSON.parse(match[2]) : [];
         } catch {
           assertions = [];
         }

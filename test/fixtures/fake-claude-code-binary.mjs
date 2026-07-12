@@ -68,14 +68,17 @@ if (prompt.includes("__FAKE_CLAUDE_HANG__")) {
 } else if (prompt.includes("__FAKE_CLAUDE_ECHO__ ")) {
   const payload = prompt.slice(prompt.indexOf("__FAKE_CLAUDE_ECHO__ ") + "__FAKE_CLAUDE_ECHO__ ".length);
   write(resultEvent({ result: payload }));
-} else if (/Assertions:\n[\s\S]*?\nModel output:/.test(prompt)) {
+} else if (/<untrusted_assertions-([0-9a-f-]+)>\n[\s\S]*?<\/untrusted_assertions-\1>/.test(prompt)) {
   // Judge grading call (see grade.ts's renderRubricPrompt) — answer every
   // assertion as satisfied so CLI integration tests can exercise a full
-  // with_skill/without_skill run without a real judge model.
-  const match = prompt.match(/Assertions:\n([\s\S]*?)\nModel output:/);
+  // with_skill/without_skill run without a real judge model. Assertions are
+  // wrapped in a nonce'd <untrusted_assertions-{nonce}> boundary tag; match
+  // it with a backreference so only the true (same-nonce) closing tag ends
+  // the capture, not any forged tag a malicious assertion might contain.
+  const match = prompt.match(/<untrusted_assertions-([0-9a-f-]+)>\n([\s\S]*?)\n<\/untrusted_assertions-\1>/);
   let assertions = [];
   try {
-    assertions = match ? JSON.parse(match[1]) : [];
+    assertions = match ? JSON.parse(match[2]) : [];
   } catch {
     assertions = [];
   }
