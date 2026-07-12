@@ -139,6 +139,10 @@ h3 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 article {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -177,7 +181,8 @@ footer {
     flex-direction: column;
   }
 
-  .grid.two {
+  .grid.two,
+  .grid.three {
     grid-template-columns: 1fr;
   }
 

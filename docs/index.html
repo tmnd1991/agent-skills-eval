@@ -15,6 +15,7 @@
           <a href="#quickstart">Quickstart</a>
           <a href="#config">Config</a>
           <a href="#sdk">SDK</a>
+          <a href="#run-modes">Run modes</a>
           <a href="#artifacts">Artifacts</a>
           <a href="https://github.com/darkrishabh/agent-skills-eval">GitHub</a>
         </div>
@@ -104,6 +105,45 @@ const result = await evaluateSkills({
   judge: { model: provider.model, provider },
   onEvent: consoleReporter(),
 });</code></pre>
+      </section>
+
+      <section id="run-modes">
+        <h2>Run Modes</h2>
+        <p>
+          Target/judge calls can go through an OpenAI-compatible API, or be routed through an agentic CLI you
+          already have configured. See the README for full flag references, config, and caveats for each.
+        </p>
+        <div class="grid three">
+          <article>
+            <h3>api (default)</h3>
+            <p>Calls any OpenAI-compatible HTTP endpoint directly.</p>
+          </article>
+          <article>
+            <h3>opencode</h3>
+            <p>
+              Drives the <code>opencode</code> CLI (<code>--run-mode opencode</code>) so target/judge calls get
+              opencode's own tool use, permissions, and native skill loading (no prompt injection).
+            </p>
+            <p><a href="https://github.com/darkrishabh/agent-skills-eval#opencode-run-mode">Full opencode run mode docs →</a></p>
+          </article>
+          <article>
+            <h3>claude-code</h3>
+            <p>
+              Drives the <code>claude</code> CLI's batch mode (<code>--run-mode claude-code</code>, i.e.
+              <code>claude -p</code>) so target/judge calls get Claude Code's own tool use, permissions, and
+              native skill loading.
+            </p>
+            <p><a href="https://github.com/darkrishabh/agent-skills-eval#claude-code-run-mode">Full claude-code run mode docs →</a></p>
+          </article>
+        </div>
+        <pre><code>npx agent-skills-eval ./skills \
+  --run-mode opencode \
+  --target anthropic/claude-sonnet-5 \
+  --opencode-agent build
+
+npx agent-skills-eval ./skills \
+  --run-mode claude-code \
+  --target claude-sonnet-5</code></pre>
       </section>
 
       <section id="skill-format">
