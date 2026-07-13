@@ -107,23 +107,3 @@ export interface Provider {
   /** Undo whatever `prepareSkill` installed, regardless of `mode`. */
   cleanupSkill?(skill: SkillSource, mode: "with_skill" | "without_skill"): Promise<void>;
 }
-
-export function createStaticProvider(output: string, options: Partial<ProviderResult> = {}): Provider {
-  return {
-    name: options.provider ?? "static",
-    model: options.model ?? "static-model",
-    async complete(): Promise<ProviderResult> {
-      return {
-        provider: options.provider ?? "static",
-        model: options.model ?? "static-model",
-        output,
-        latencyMs: options.latencyMs ?? 0,
-        inputTokens: options.inputTokens ?? 0,
-        outputTokens: options.outputTokens ?? 0,
-        costUsd: options.costUsd ?? 0,
-        error: options.error,
-        toolCalls: options.toolCalls,
-      };
-    },
-  };
-}

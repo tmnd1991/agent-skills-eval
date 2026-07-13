@@ -4,9 +4,9 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  allocateIterationWorkspace,
   buildBenchmark,
   discoverSkills,
-  ensureIterationDir,
   evaluateSkills,
   generateReport,
   gradeOutputs,
@@ -130,7 +130,7 @@ test("gradeOutputs returns spec grading JSON and fails closed", async () => {
   assert.match(bad.grading.assertion_results[0].evidence, /unparseable/);
 });
 
-test("buildBenchmark and ensureIterationDir follow spec shapes", () => {
+test("buildBenchmark and allocateIterationWorkspace follow spec shapes", () => {
   const benchmark = buildBenchmark([
     { mode: "with_skill", passRate: 1, durationMs: 1000, tokens: 10 },
     { mode: "without_skill", passRate: 0.5, durationMs: 2000, tokens: 5 },
@@ -139,8 +139,8 @@ test("buildBenchmark and ensureIterationDir follow spec shapes", () => {
   assert.equal(benchmark.run_summary.with_skill.time_seconds.mean, 1);
 
   const root = tempRoot();
-  assert.equal(ensureIterationDir(root).iteration, 1);
-  assert.equal(ensureIterationDir(root).iteration, process.env.CI === "true" ? 1 : 2);
+  assert.equal(allocateIterationWorkspace(root).iteration, 1);
+  assert.equal(allocateIterationWorkspace(root).iteration, process.env.CI === "true" ? 1 : 2);
 });
 
 test("runEval supports complete-only provider fallback and writes artifacts", async () => {

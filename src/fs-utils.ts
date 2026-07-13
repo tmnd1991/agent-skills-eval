@@ -18,9 +18,6 @@ export function toPosixPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-export const pathToPosix = toPosixPath;
-export const normalizePosix = toPosixPath;
-
 export function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }
@@ -78,16 +75,10 @@ export function assertNoEscapingSymlinks(dir: string, realRoot: string, isRoot =
 export function safeResolve(root: string, relativePath: string): { absolutePath: string; relativePath: string } | null {
   const rootDir = path.resolve(root);
   const absolutePath = path.resolve(rootDir, relativePath);
-  if (absolutePath !== rootDir && !absolutePath.startsWith(rootDir + path.sep)) {
+  if (!isInsideDir(rootDir, absolutePath)) {
     return null;
   }
   return { absolutePath, relativePath: toPosixPath(path.relative(rootDir, absolutePath)) };
-}
-
-export function resolveInside(root: string, relativePath: string): string {
-  const resolved = safeResolve(root, relativePath);
-  if (!resolved) throw new Error(`Path escapes skill directory: ${relativePath}`);
-  return resolved.relativePath;
 }
 
 export function readAttachedFile(root: string, relativePath: string, maxFileBytes = DEFAULT_MAX_FILE_BYTES): AttachedFile {

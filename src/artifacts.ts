@@ -179,10 +179,10 @@ export function snapshotSkillToHistory(workspaceSkillDir: string, historyDir: st
 }
 
 /**
- * @deprecated Replaced by `ensureSkillWorkspaceDir` + `allocateHistoryIteration`.
- * Kept for callers who explicitly want the legacy iteration-N layout.
+ * Allocate the official agentskills.io eval workspace layout:
+ * `<workspace>/iteration-N/`.
  */
-export function ensureIterationDir(workspace: string): { dir: string; iteration: number } {
+export function allocateIterationWorkspace(workspace: string): { dir: string; iteration: number } {
   const root = path.resolve(workspace);
   mkdirSync(root, { recursive: true });
   if (process.env.CI === "true") {
@@ -202,12 +202,4 @@ export function ensureIterationDir(workspace: string): { dir: string; iteration:
   assertInside(root, dir, "iteration directory");
   mkdirSync(dir, { recursive: true });
   return { dir, iteration };
-}
-
-/**
- * Allocate the official agentskills.io eval workspace layout:
- * `<workspace>/iteration-N/`.
- */
-export function allocateIterationWorkspace(workspace: string): { dir: string; iteration: number } {
-  return ensureIterationDir(workspace);
 }

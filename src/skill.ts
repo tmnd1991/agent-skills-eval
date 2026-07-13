@@ -14,7 +14,7 @@ import {
   SKILL_NAME_PATTERN,
   assertSafeSkillName,
   isInsideDir,
-  pathToPosix,
+  toPosixPath,
   readAttachedFile,
   walkFiles,
 } from "./fs-utils.js";
@@ -123,7 +123,7 @@ function readReferences(skillDir: string, maxFileBytes: number): AttachedFile[] 
   return walkFiles(
     referencesDir,
     (filePath) => REFERENCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()),
-    (a, b) => pathToPosix(path.relative(referencesDir, a)).localeCompare(pathToPosix(path.relative(referencesDir, b)))
+    (a, b) => toPosixPath(path.relative(referencesDir, a)).localeCompare(toPosixPath(path.relative(referencesDir, b)))
   ).map((filePath) => readAttachedFile(skillDir, path.relative(skillDir, filePath), maxFileBytes));
 }
 
@@ -139,7 +139,7 @@ function readScripts(skillDir: string, maxFileBytes: number, includeScriptBodies
       const stat = statSync(fullPath);
       const firstLine = readFileSync(fullPath, "utf8").split(/\r?\n/, 1)[0] ?? "";
       const manifest: AttachedFile = {
-        path: pathToPosix(relPath),
+        path: toPosixPath(relPath),
         content: firstLine.startsWith("#!") ? firstLine : "",
         kind: "text",
         bytes: stat.size,

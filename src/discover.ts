@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { load } from "js-yaml";
-import { normalizePosix } from "./fs-utils.js";
+import { toPosixPath } from "./fs-utils.js";
 
 export interface SkillRef {
   name: string;
@@ -22,7 +22,7 @@ function globToRegExp(pattern: string): RegExp {
 
 function matchesAny(relPath: string, patterns: string[] | undefined): boolean {
   if (!patterns || patterns.length === 0) return false;
-  return patterns.some((pattern) => globToRegExp(normalizePosix(pattern)).test(relPath));
+  return patterns.some((pattern) => globToRegExp(toPosixPath(pattern)).test(relPath));
 }
 
 function readSkillName(skillPath: string, fallback: string): string {
@@ -52,10 +52,10 @@ export function discoverSkills(
       return;
     }
 
-    const relPath = normalizePosix(path.relative(discoveryRoot, dir) || basename);
+    const relPath = toPosixPath(path.relative(discoveryRoot, dir) || basename);
     const skillPath = path.join(dir, "SKILL.md");
     if (existsSync(skillPath)) {
-      const normalizedRel = normalizePosix(path.relative(discoveryRoot, dir));
+      const normalizedRel = toPosixPath(path.relative(discoveryRoot, dir));
       if (!matchesAny(normalizedRel, opts.exclude) && (!opts.include?.length || matchesAny(normalizedRel, opts.include))) {
         results.push({
           name: readSkillName(skillPath, basename),

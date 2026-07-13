@@ -50,7 +50,6 @@ export {
   allocateHistoryIteration,
   allocateIterationWorkspace,
   buildBenchmark,
-  ensureIterationDir,
   ensureSkillWorkspaceDir,
   snapshotSkillToHistory,
   writeRunArtifacts,
@@ -67,5 +66,4 @@ export { OpencodeProvider } from "./opencode-provider.js";
 export { ClaudeCodeProvider } from "./claude-code-provider.js";
 export { runEval } from "./run-eval.js";
 export { loadSkill } from "./skill.js";
-export { createStaticProvider } from "./provider.js";
 export { installSignalHandlers, registerShutdownHook } from "./shutdown.js";
